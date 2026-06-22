@@ -1,0 +1,8 @@
+build/
+*.exe
+*.obj
+*.ilk
+*.pdb
+*.log
+.vs/
+tests/debug_data/
