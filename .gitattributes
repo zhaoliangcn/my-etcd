@@ -1,0 +1,26 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Source code
+*.h   diff=cpp
+*.cpp diff=cpp
+*.hpp diff=cpp
+
+# Scripts
+*.py  diff=python
+*.sh  text eol=lf
+
+# Documentation
+*.md  diff=markdown
+*.txt text
+
+# Binary files - treat as binary
+*.db  binary
+*.log binary
+*.exe binary
+*.obj binary
+*.ilk binary
+*.pdb binary
+
+# Build output
+build/ binary
