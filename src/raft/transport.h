@@ -32,6 +32,8 @@ struct AppendEntriesResponse {
     Term term;
     bool success;
     Index last_log_index;
+    Index conflict_index = 0;       // 冲突日志的 index（优化回退用）
+    Term conflict_term = 0;         // 冲突日志的 term（优化回退用）
 };
 
 // 传输层抽象接口

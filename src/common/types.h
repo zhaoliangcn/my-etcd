@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <map>
 #include <optional>
 #include <chrono>
 #include <functional>
@@ -82,6 +83,7 @@ struct ClusterConfig {
     std::string listen_addr = "0.0.0.0:2379";
     std::string listen_peer_addr = "0.0.0.0:2380";
     std::vector<std::string> initial_cluster;
+    std::map<NodeId, std::string> peer_addresses;      // node_id → "host:port" 用于 TCP 传输
     
     // 时间参数 (毫秒)
     int64_t election_timeout_ms = 1000;

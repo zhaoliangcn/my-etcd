@@ -43,6 +43,12 @@ public:
     // 提案一个操作
     ProposalResult Propose(const RaftEntry& entry);
 
+    // 批量提案 - 缓存并合并写入日志
+    ProposalResult ProposeBatch(const RaftEntry& entry);
+
+    // 刷新批量缓冲区
+    void FlushBatch();
+
     // 处理 RequestVote
     RequestVoteResponse HandleRequestVote(const RequestVoteRequest& req);
 
@@ -90,6 +96,9 @@ private:
     // 生成随机选举超时
     int64_t RandomElectionTimeout();
 
+    // 二分查找冲突 term 对应的第一条日志索引
+    Index FindConflictTermIndex(Term conflict_term, Index conflict_index_hint);
+
     ClusterConfig config_;
     NodeId node_id_;
 
@@ -131,6 +140,11 @@ private:
     // 已提交但未应用的条目
     std::vector<RaftEntry> pending_committed_;
     std::mutex pending_mu_;
+
+    // 批量提交缓冲区
+    std::vector<RaftEntry> batch_buffer_;
+    std::mutex batch_mu_;
+    static constexpr size_t kMaxBatchSize = 64;
 };
 
 } // namespace myetcd

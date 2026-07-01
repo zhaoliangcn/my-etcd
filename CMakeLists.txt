@@ -24,6 +24,8 @@ set(SOURCES
     src/raft/raft_log.cpp
     src/raft/raft_node.h
     src/raft/transport.h
+    src/raft/tcp_transport.h
+    src/raft/tcp_transport.cpp
     src/wal/wal.h
     src/wal/wal.cpp
     src/snapshot/snapshot.h
@@ -53,6 +55,8 @@ set(LIB_SOURCES
     src/raft/raft_log.cpp
     src/raft/raft_node.h
     src/raft/transport.h
+    src/raft/tcp_transport.h
+    src/raft/tcp_transport.cpp
     src/wal/wal.h
     src/wal/wal.cpp
     src/snapshot/snapshot.h

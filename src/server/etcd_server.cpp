@@ -1,4 +1,5 @@
 #include "server/etcd_server.h"
+#include "raft/tcp_transport.h"
 #include <iostream>
 #include <chrono>
 #include <sstream>
@@ -71,6 +72,20 @@ bool EtcdServer::Start() {
         wal_->TruncateFrom(idx);
     });
 
+    // 6.5 设置 TCP Transport（多节点模式）
+    if (!config_.peer_addresses.empty()) {
+        auto transport = std::make_shared<TcpTransport>(config_.node_id, config_.listen_peer_addr);
+        transport->SetPeerAddresses(config_.peer_addresses);
+        transport->SetRequestVoteHandler(
+            std::bind(&RaftNode::HandleRequestVote, raft_node_.get(), std::placeholders::_1));
+        transport->SetAppendEntriesHandler(
+            std::bind(&RaftNode::HandleAppendEntries, raft_node_.get(), std::placeholders::_1));
+        transport->Start();
+        raft_node_->SetTransport(transport);
+        transport_ = transport;
+        std::cout << "[Server] TCP Transport started on " << config_.listen_peer_addr << std::endl;
+    }
+
     // 7. 设置租约过期回调
     lease_mgr_->SetExpireCallback(
         std::bind(&EtcdServer::OnLeaseExpired, this, std::placeholders::_1));
@@ -92,6 +107,7 @@ bool EtcdServer::Start() {
 
 void EtcdServer::Stop() {
     running_ = false;
+    if (transport_) transport_->Stop();
     if (snapshot_thread_.joinable()) {
         snapshot_thread_.join();
     }

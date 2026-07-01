@@ -9,6 +9,7 @@
 #include <vector>
 #include <cstring>
 #include <algorithm>
+#include <cstdint>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -501,9 +502,32 @@ void PrintUsage(const char* prog) {
               << "  --data-dir <path>         Data directory (default: ./data)\n"
               << "  --listen-addr <addr>      Client listen address (default: 0.0.0.0:2379)\n"
               << "  --listen-peer-addr <addr> Peer listen address (default: 0.0.0.0:2380)\n"
-              << "  --initial-cluster <str>   Initial cluster config\n"
+              << "  --initial-cluster <str>   Initial cluster config, format: name1=addr1,name2=addr2,...\n"
               << "  --help                    Show this help\n"
               << std::endl;
+}
+
+// 解析 --initial-cluster 参数，格式: "node1=127.0.0.1:2380,node2=127.0.0.2:2380,..."
+// 返回解析后的初始集群列表，并填充 peer_addresses 映射
+std::vector<std::string> ParseInitialCluster(const std::string& cluster_str,
+                                             myetcd::NodeId& /*self_node_id*/,
+                                             std::map<myetcd::NodeId, std::string>& peer_addresses) {
+    std::vector<std::string> result;
+    std::istringstream iss(cluster_str);
+    std::string part;
+    myetcd::NodeId id_counter = 1;
+
+    while (std::getline(iss, part, ',')) {
+        size_t eq = part.find('=');
+        if (eq == std::string::npos) continue;
+
+        std::string addr = part.substr(eq + 1);
+        result.push_back(part);
+        peer_addresses[id_counter] = addr;
+        ++id_counter;
+    }
+
+    return result;
 }
 
 int main(int argc, char* argv[]) {
@@ -522,6 +546,8 @@ int main(int argc, char* argv[]) {
             config.listen_addr = argv[++i];
         } else if (arg == "--listen-peer-addr" && i + 1 < argc) {
             config.listen_peer_addr = argv[++i];
+        } else if (arg == "--initial-cluster" && i + 1 < argc) {
+            config.initial_cluster = ParseInitialCluster(argv[++i], config.node_id, config.peer_addresses);
         } else if (arg == "--help") {
             PrintUsage(argv[0]);
             return 0;

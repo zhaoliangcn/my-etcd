@@ -2,6 +2,7 @@
 
 #include "common/types.h"
 #include "raft/raft.h"
+#include "raft/tcp_transport.h"
 #include "wal/wal.h"
 #include "snapshot/snapshot.h"
 #include "storage/kvstore.h"
@@ -71,6 +72,7 @@ private:
     std::unique_ptr<RaftNode> raft_node_;
     std::unique_ptr<LeaseManager> lease_mgr_;
     std::unique_ptr<WatchManager> watch_mgr_;
+    std::shared_ptr<TcpTransport> transport_;
 
     std::atomic<bool> running_{false};
     std::thread snapshot_thread_;

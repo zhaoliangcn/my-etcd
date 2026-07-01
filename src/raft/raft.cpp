@@ -12,6 +12,7 @@ RaftNode::RaftNode(const ClusterConfig& config)
     , rng_(std::chrono::steady_clock::now().time_since_epoch().count())
 {
     for (const auto& peer : config.initial_cluster) {
+        (void)peer;
         // 解析 "name=addr" 格式，简化处理
         NodeId id = peers_.size() + 1;
         if (id != node_id_) {
@@ -158,6 +159,9 @@ void RaftNode::StartElection() {
 }
 
 void RaftNode::BroadcastHeartbeat() {
+    // Leader 先刷新批量缓冲区
+    FlushBatch();
+
     auto current_commit = commit_index_.load();
 
     for (auto peer : peers_) {
@@ -165,6 +169,12 @@ void RaftNode::BroadcastHeartbeat() {
         Term prev_log_term = log_.TermAt(prev_log_index);
 
         auto entries = log_.EntriesFrom(next_index_[peer]);
+
+        // 限制单次发送条目数（流水线控制）
+        const size_t max_entries_per_msg = 128;
+        if (entries.size() > max_entries_per_msg) {
+            entries.resize(max_entries_per_msg);
+        }
 
         AppendEntriesRequest req;
         req.term = current_term_.load();
@@ -194,9 +204,32 @@ void RaftNode::BroadcastHeartbeat() {
                 match_index_[peer] = std::max(match_index_[peer], resp.last_log_index);
             }
         } else {
-            // 日志不一致：回退 next_index
-            if (next_index_[peer] > 1) {
-                next_index_[peer]--;
+            // ----- 优化：二分查找回退 -----
+            if (resp.conflict_term > 0) {
+                // 找到 Leader 日志中冲突 term 的第一条索引
+                Index new_next = FindConflictTermIndex(resp.conflict_term, resp.conflict_index);
+                if (new_next > 0 && new_next < next_index_[peer]) {
+                    next_index_[peer] = new_next;
+                } else {
+                    // 如果没找到，回退到冲突索引
+                    if (resp.conflict_index > 0 && resp.conflict_index < next_index_[peer]) {
+                        next_index_[peer] = resp.conflict_index;
+                    } else if (next_index_[peer] > 1) {
+                        next_index_[peer]--;
+                    }
+                }
+            } else if (resp.conflict_index > 0) {
+                // Follower 没有冲突 term 信息，使用 conflict_index
+                if (resp.conflict_index < next_index_[peer]) {
+                    next_index_[peer] = resp.conflict_index;
+                } else if (next_index_[peer] > 1) {
+                    next_index_[peer]--;
+                }
+            } else {
+                // 回退
+                if (next_index_[peer] > 1) {
+                    next_index_[peer]--;
+                }
             }
         }
     }
@@ -270,6 +303,92 @@ ProposalResult RaftNode::Propose(const RaftEntry& entry) {
     return result;
 }
 
+ProposalResult RaftNode::ProposeBatch(const RaftEntry& entry) {
+    if (!IsLeader()) {
+        ProposalResult result;
+        result.accepted = false;
+        std::ostringstream oss;
+        oss << "not leader, current leader is " << leader_id_.load();
+        result.error = oss.str();
+        return result;
+    }
+
+    RaftEntry e = entry;
+    e.term = current_term_.load();
+
+    // 先放入缓冲区，攒批后在 BroadcastHeartbeat 中一并写入日志
+    ProposalResult result;
+    {
+        std::lock_guard<std::mutex> lock(batch_mu_);
+        e.index = log_.LastIndex() + 1 + batch_buffer_.size();
+        batch_buffer_.push_back(e);
+        result.index = e.index;
+    }
+    result.accepted = true;
+    return result;
+}
+
+void RaftNode::FlushBatch() {
+    std::vector<RaftEntry> batch;
+    {
+        std::lock_guard<std::mutex> lock(batch_mu_);
+        if (batch_buffer_.empty()) return;
+        batch.swap(batch_buffer_);
+    }
+
+    if (batch.empty()) return;
+
+    // 修正索引（ProposeBatch 时用的是预测索引，此时需要确保精确）
+    Index base = log_.LastIndex() + 1;
+    for (size_t i = 0; i < batch.size(); ++i) {
+        batch[i].index = base + static_cast<Index>(i);
+    }
+
+    log_.Append(batch);
+    match_index_[node_id_] = batch.back().index;
+}
+
+Index RaftNode::FindConflictTermIndex(Term conflict_term, Index conflict_index_hint) {
+    Index first = log_.FirstIndex();
+    Index last = log_.LastIndex();
+
+    // 如果 conflict_term 在当前日志中不存在（说明 Leader 中没有该 term 的条目），
+    // 直接回退到 conflict_index_hint
+    bool has_term = false;
+    for (Index i = first; i <= last; ++i) {
+        if (log_.TermAt(i) == conflict_term) {
+            has_term = true;
+            break;
+        }
+    }
+    if (!has_term) return (conflict_index_hint > 0) ? conflict_index_hint : 1;
+
+    // 二分查找 conflict_term 的第一条日志索引
+    Index lo = first;
+    Index hi = last + 1;
+    while (lo < hi) {
+        Index mid = lo + (hi - lo) / 2;
+        Term t = log_.TermAt(mid);
+        if (t < conflict_term) {
+            lo = mid + 1;
+        } else if (t > conflict_term) {
+            hi = mid;
+        } else {
+            // 找到了 conflict_term，继续向左找第一条
+            hi = mid;
+        }
+    }
+
+    Index result = lo;
+    // 确保是有效的索引
+    if (result >= first && result <= last && log_.TermAt(result) == conflict_term) {
+        return result;
+    }
+
+    // 回退方案
+    return (conflict_index_hint > 0) ? conflict_index_hint : (first > 0 ? first : 1);
+}
+
 RequestVoteResponse RaftNode::HandleRequestVote(const RequestVoteRequest& req) {
     RequestVoteResponse resp;
     resp.term = current_term_.load();
@@ -324,6 +443,25 @@ AppendEntriesResponse RaftNode::HandleAppendEntries(const AppendEntriesRequest& 
         Term local_term = log_.TermAt(req.prev_log_index);
         if (local_term != req.prev_log_term) {
             resp.success = false;
+
+            // ---- 添加冲突信息用于二分查找回退 ----
+            // 获取冲突索引处的 term
+            Term conflict_term = log_.TermAt(req.prev_log_index);
+            if (conflict_term != kNoTerm) {
+                resp.conflict_term = conflict_term;
+            }
+            // 找到该 term 的第一条日志索引
+            Index first_idx = log_.FirstIndex();
+            for (Index i = req.prev_log_index; i >= first_idx && i > 0; --i) {
+                if (log_.TermAt(i) != conflict_term) {
+                    resp.conflict_index = i + 1;
+                    break;
+                }
+            }
+            if (resp.conflict_index == 0) {
+                resp.conflict_index = first_idx;
+            }
+
             return resp;
         }
     }
