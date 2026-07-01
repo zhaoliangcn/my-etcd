@@ -138,6 +138,13 @@ std::vector<uint8_t> WAL::SerializeEntry(const RaftEntry& entry) {
     write_str(entry.value);
     write_u64(static_cast<uint64_t>(entry.lease_id));
 
+    // 写入 ConfChange 数据（仅 CONF_CHANGE 类型时）
+    if (entry.type == EventType::CONF_CHANGE) {
+        write_u8(static_cast<uint8_t>(entry.conf_change.type));
+        write_u64(entry.conf_change.node_id);
+        write_str(entry.conf_change.peer_addr);
+    }
+
     // 写入总长度前缀
     uint32_t total_len = static_cast<uint32_t>(data.size());
     data.insert(data.begin(), {
@@ -199,6 +206,13 @@ RaftEntry WAL::DeserializeEntry(const uint8_t* data, size_t& offset) {
     entry.key = read_str();
     entry.value = read_str();
     entry.lease_id = static_cast<LeaseId>(read_u64());
+
+    // 读取 ConfChange 数据（仅 CONF_CHANGE 类型）
+    if (entry.type == EventType::CONF_CHANGE) {
+        entry.conf_change.type = static_cast<ConfChangeType>(read_u8());
+        entry.conf_change.node_id = read_u64();
+        entry.conf_change.peer_addr = read_str();
+    }
 
     return entry;
 }

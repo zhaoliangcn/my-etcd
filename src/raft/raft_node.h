@@ -26,6 +26,7 @@ public:
     using ReadyHandler = std::function<void(const std::vector<RaftEntry>&)>;
     using StateChangeHandler = std::function<void(NodeState)>;
     using SnapshotHandler = std::function<void(Index)>;
+    using ConfChangeHandler = std::function<void(const ConfChange&)>;
 
     explicit RaftNode(const ClusterConfig& config);
     ~RaftNode();
@@ -65,13 +66,24 @@ public:
     void SetReadyHandler(ReadyHandler handler) { ready_handler_ = std::move(handler); }
     void SetStateChangeHandler(StateChangeHandler handler) { state_change_handler_ = std::move(handler); }
     void SetSnapshotHandler(SnapshotHandler handler) { snapshot_handler_ = std::move(handler); }
+    void SetConfChangeHandler(ConfChangeHandler handler) { conf_change_handler_ = std::move(handler); }
 
     // 设置传输层
     void SetTransport(std::shared_ptr<Transport> transport) { transport_ = std::move(transport); }
 
-    // 添加节点
-    void AddNode(NodeId id) { peers_.insert(id); }
-    void RemoveNode(NodeId id) { peers_.erase(id); }
+    // 添加/移除节点（直接操作，不经过 Raft 协议）
+    void AddNode(NodeId id);
+    void RemoveNode(NodeId id);
+
+    // 通过 Raft 协议提案成员变更（仅 Leader 可用）
+    ProposalResult ProposeConfChange(const ConfChange& cc);
+
+    // 应用成员变更（回调 conf_change_handler_ 后执行内部状态更新）
+    void ApplyConfChange(const ConfChange& cc);
+
+    // 获取当前 peers
+    std::set<NodeId> GetPeers() const { return peers_; }
+    bool HasPeer(NodeId id) const { return peers_.count(id) > 0; }
 
     // 快照相关
     void ApplySnapshot(const Snapshot& snapshot);
@@ -127,6 +139,7 @@ private:
     ReadyHandler ready_handler_;
     StateChangeHandler state_change_handler_;
     SnapshotHandler snapshot_handler_;
+    ConfChangeHandler conf_change_handler_;
 
     // 线程
     std::thread worker_thread_;

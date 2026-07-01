@@ -39,6 +39,7 @@ public:
     HttpResponse Delete(const std::string& key);
     HttpResponse Range(const std::string& key, const std::string& range_end = "",
                        Revision revision = 0, int64_t limit = 0);
+    HttpResponse Txn(const std::string& request_body);
 
     // Watch 操作
     HttpResponse Watch(const std::string& key, Revision start_rev = 0, bool prefix = false);
@@ -52,6 +53,11 @@ public:
 
     // 集群信息
     HttpResponse ClusterInfo();
+
+    // 成员变更
+    HttpResponse MemberAdd(const std::string& peer_addr);
+    HttpResponse MemberRemove(NodeId id);
+    void OnConfChangeApplied(const ConfChange& cc);
 
     // 获取 KVStore
     KVStore& GetKVStore() { return *kvstore_; }

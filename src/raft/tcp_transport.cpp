@@ -260,6 +260,14 @@ std::vector<uint8_t> TcpTransport::ProcessIncomingMsg(const std::vector<uint8_t>
             e.key = reader.ReadString();
             e.value = reader.ReadString();
             e.lease_id = static_cast<LeaseId>(reader.ReadU64());
+
+            // 读取 ConfChange 数据（仅 CONF_CHANGE 类型）
+            if (e.type == EventType::CONF_CHANGE) {
+                e.conf_change.type = static_cast<ConfChangeType>(reader.ReadU8());
+                e.conf_change.node_id = reader.ReadU64();
+                e.conf_change.peer_addr = reader.ReadString();
+            }
+
             req.entries.push_back(std::move(e));
         }
 
@@ -432,6 +440,13 @@ AppendEntriesResponse TcpTransport::SendAppendEntries(NodeId target,
         w.WriteString(e.key);
         w.WriteString(e.value);
         w.WriteU64(static_cast<uint64_t>(e.lease_id));
+
+        // 序列化 ConfChange 数据（仅 CONF_CHANGE 类型）
+        if (e.type == EventType::CONF_CHANGE) {
+            w.WriteU8(static_cast<uint8_t>(e.conf_change.type));
+            w.WriteU64(e.conf_change.node_id);
+            w.WriteString(e.conf_change.peer_addr);
+        }
     }
 
     auto resp_data = SendAndReceive(addr, w.buf);

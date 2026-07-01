@@ -265,6 +265,13 @@ void RaftNode::ApplyCommittedEntries() {
     if (committed > applied) {
         auto entries = log_.Slice(applied + 1, committed + 1);
         
+        // 处理 CONF_CHANGE 条目：在转发给 EtcdServer 之前先执行节点变更
+        for (const auto& e : entries) {
+            if (e.type == EventType::CONF_CHANGE) {
+                ApplyConfChange(e.conf_change);
+            }
+        }
+        
         {
             std::lock_guard<std::mutex> lock(pending_mu_);
             pending_committed_.insert(pending_committed_.end(), entries.begin(), entries.end());
@@ -346,6 +353,68 @@ void RaftNode::FlushBatch() {
 
     log_.Append(batch);
     match_index_[node_id_] = batch.back().index;
+}
+
+ProposalResult RaftNode::ProposeConfChange(const ConfChange& cc) {
+    if (!IsLeader()) {
+        ProposalResult result;
+        result.accepted = false;
+        result.error = "not leader";
+        return result;
+    }
+
+    RaftEntry e;
+    e.term = current_term_.load();
+    e.index = log_.LastIndex() + 1;
+    e.type = EventType::CONF_CHANGE;
+    e.conf_change = cc;
+
+    log_.Append(e);
+    match_index_[node_id_] = e.index;
+
+    ProposalResult result;
+    result.index = e.index;
+    result.accepted = true;
+    return result;
+}
+
+void RaftNode::ApplyConfChange(const ConfChange& cc) {
+    if (cc.type == ConfChangeType::AddNode) {
+        if (peers_.count(cc.node_id) == 0) {
+            peers_.insert(cc.node_id);
+            // 如果是 Leader，初始化 next_index 和 match_index
+            if (IsLeader()) {
+                next_index_[cc.node_id] = log_.LastIndex() + 1;
+                match_index_[cc.node_id] = 0;
+            }
+            if (conf_change_handler_) {
+                conf_change_handler_(cc);
+            }
+            std::cout << "[Raft] Node " << cc.node_id << " added to cluster, addr="
+                      << cc.peer_addr << std::endl;
+        }
+    } else if (cc.type == ConfChangeType::RemoveNode) {
+        peers_.erase(cc.node_id);
+        next_index_.erase(cc.node_id);
+        match_index_.erase(cc.node_id);
+
+        if (conf_change_handler_) {
+            conf_change_handler_(cc);
+        }
+        std::cout << "[Raft] Node " << cc.node_id << " removed from cluster" << std::endl;
+    }
+}
+
+void RaftNode::AddNode(NodeId id) {
+    if (peers_.count(id) == 0) {
+        peers_.insert(id);
+    }
+}
+
+void RaftNode::RemoveNode(NodeId id) {
+    peers_.erase(id);
+    next_index_.erase(id);
+    match_index_.erase(id);
 }
 
 Index RaftNode::FindConflictTermIndex(Term conflict_term, Index conflict_index_hint) {

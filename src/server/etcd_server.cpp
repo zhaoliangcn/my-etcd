@@ -71,6 +71,9 @@ bool EtcdServer::Start() {
         snapshot_mgr_->CreateSnapshot(idx, raft_node_->CurrentTerm(), data);
         wal_->TruncateFrom(idx);
     });
+    raft_node_->SetConfChangeHandler([this](const ConfChange& cc) {
+        OnConfChangeApplied(cc);
+    });
 
     // 6.5 设置 TCP Transport（多节点模式）
     if (!config_.peer_addresses.empty()) {
@@ -281,6 +284,134 @@ HttpResponse EtcdServer::Range(const std::string& key, const std::string& range_
     return resp;
 }
 
+HttpResponse EtcdServer::Txn(const std::string& request_body) {
+    HttpResponse resp;
+
+    // 简化 JSON 解析：只支持最基本的格式
+    // {"compare":[{"target":"value","key":"k","op":"equal","value":"v"}],
+    //  "success":[{"type":"PUT","key":"k","value":"v"}],
+    //  "failure":[{"type":"DELETE","key":"k"}]}
+
+    auto parse_str = [](const std::string& s, const std::string& key) -> std::string {
+        std::string search = "\"" + key + "\":\"";
+        size_t p = s.find(search);
+        if (p == std::string::npos) return "";
+        p += search.size();
+        size_t end = s.find('"', p);
+        if (end == std::string::npos) return "";
+        return s.substr(p, end - p);
+    };
+
+    // 检查 compare 条件
+    bool conditions_met = true;
+
+    // 查找 compare 数组
+    size_t cmp_start = request_body.find("\"compare\":[");
+    if (cmp_start != std::string::npos) {
+        size_t cmp_end = request_body.find(']', cmp_start);
+        std::string cmp_section = request_body.substr(cmp_start, cmp_end - cmp_start + 1);
+
+        // 遍历 compare 数组中的每个条件
+        size_t pos = cmp_section.find('{', 0);
+        while (pos != std::string::npos) {
+            size_t brace_end = cmp_section.find('}', pos);
+            if (brace_end == std::string::npos) break;
+            std::string cmp_obj = cmp_section.substr(pos, brace_end - pos + 1);
+
+            std::string target = parse_str(cmp_obj, "target");
+            std::string key = parse_str(cmp_obj, "key");
+            std::string op_str = parse_str(cmp_obj, "op");
+            std::string cmp_value = parse_str(cmp_obj, "value");
+
+            // 获取当前 key 的值
+            auto kv = kvstore_->Get(key);
+            std::string current_value = kv ? kv->value : "";
+
+            // 只支持值比较（equal / notequal）
+            CompareOp op = (op_str == "notequal") ? CompareOp::NotEqual : CompareOp::Equal;
+
+            if (target == "value") {
+                if (op == CompareOp::Equal) {
+                    if (current_value != cmp_value) conditions_met = false;
+                } else {
+                    if (current_value == cmp_value) conditions_met = false;
+                }
+            } else if (target == "version") {
+                int64_t cur_ver = kv ? kv->version : 0;
+                int64_t exp_ver = 0;
+                try { exp_ver = std::stoll(cmp_value); } catch (...) {}
+                if (op == CompareOp::Equal && cur_ver != exp_ver) conditions_met = false;
+                if (op == CompareOp::NotEqual && cur_ver == exp_ver) conditions_met = false;
+            } else {
+                // 不支持的条件类型
+                conditions_met = false;
+            }
+
+            pos = cmp_section.find('{', brace_end + 1);
+        }
+    }
+
+    // 选择执行成功或失败分支
+    auto ops_to_execute = conditions_met ? "success" : "failure";
+
+    // 查找执行数组
+    std::string exec_search = "\"" + std::string(ops_to_execute) + "\":[";
+    size_t exec_start = request_body.find(exec_search);
+    if (exec_start == std::string::npos) {
+        resp.SetJson("{\"succeeded\":" + std::string(conditions_met ? "true" : "false") + ",\"results\":[]}");
+        return resp;
+    }
+
+    // 解析并执行操作
+    std::vector<std::string> results;
+    size_t exec_arr_start = request_body.find('[', exec_start);
+    size_t exec_arr_end = request_body.find(']', exec_arr_start);
+    std::string exec_section = request_body.substr(exec_arr_start, exec_arr_end - exec_arr_start + 1);
+
+    size_t op_pos = exec_section.find('{', 0);
+    while (op_pos != std::string::npos) {
+        size_t op_end = exec_section.find('}', op_pos);
+        if (op_end == std::string::npos) break;
+        std::string op_obj = exec_section.substr(op_pos, op_end - op_pos + 1);
+
+        std::string op_type = parse_str(op_obj, "type");
+        std::string op_key = parse_str(op_obj, "key");
+        std::string op_value = parse_str(op_obj, "value");
+
+        if (op_type == "PUT" && !op_key.empty()) {
+            // 通过 Raft 提交 Put
+            RaftEntry entry;
+            entry.type = EventType::PUT;
+            entry.key = op_key;
+            entry.value = op_value;
+            raft_node_->Propose(entry);
+
+            results.push_back("{\"type\":\"PUT\",\"key\":\"" + op_key + "\"}");
+        } else if (op_type == "DELETE" && !op_key.empty()) {
+            RaftEntry entry;
+            entry.type = EventType::DELETE;
+            entry.key = op_key;
+            raft_node_->Propose(entry);
+
+            results.push_back("{\"type\":\"DELETE\",\"key\":\"" + op_key + "\"}");
+        }
+
+        op_pos = exec_section.find('{', op_end + 1);
+    }
+
+    // 构建响应
+    std::ostringstream oss;
+    oss << "{\"succeeded\":" << (conditions_met ? "true" : "false")
+        << ",\"results\":[";
+    for (size_t i = 0; i < results.size(); ++i) {
+        if (i > 0) oss << ",";
+        oss << results[i];
+    }
+    oss << "]}";
+    resp.SetJson(oss.str());
+    return resp;
+}
+
 // Watch 操作
 
 HttpResponse EtcdServer::Watch(const std::string& key, Revision start_rev, bool prefix) {
@@ -385,6 +516,84 @@ HttpResponse EtcdServer::ClusterInfo() {
     oss << "\"revision\":" << kvstore_->CurrentRevision() << ",";
     oss << "\"keys\":" << kvstore_->Keys().size();
     oss << "}";
+    resp.SetJson(oss.str());
+    return resp;
+}
+
+// 成员变更
+
+void EtcdServer::OnConfChangeApplied(const ConfChange& cc) {
+    if (cc.type == ConfChangeType::AddNode && transport_) {
+        transport_->SetPeerAddress(cc.node_id, cc.peer_addr);
+        std::cout << "[Server] ConfChange applied: Add Node " << cc.node_id
+                  << " at " << cc.peer_addr << std::endl;
+    } else if (cc.type == ConfChangeType::RemoveNode && transport_) {
+        std::cout << "[Server] ConfChange applied: Remove Node " << cc.node_id << std::endl;
+    }
+}
+
+HttpResponse EtcdServer::MemberAdd(const std::string& peer_addr) {
+    HttpResponse resp;
+    if (!raft_node_->IsLeader()) {
+        resp.SetError(503, "not leader");
+        return resp;
+    }
+
+    NodeId new_id = 1;
+    auto peers = raft_node_->GetPeers();
+    while (peers.count(new_id) > 0 || new_id == config_.node_id) {
+        ++new_id;
+    }
+
+    ConfChange cc;
+    cc.type = ConfChangeType::AddNode;
+    cc.node_id = new_id;
+    cc.peer_addr = peer_addr;
+
+    auto result = raft_node_->ProposeConfChange(cc);
+    if (!result.accepted) {
+        resp.SetError(500, result.error);
+        return resp;
+    }
+
+    std::ostringstream oss;
+    oss << "{\"header\":{\"revision\":0},\"member\":{"
+        << "\"ID\":" << new_id << ","
+        << "\"peerURLs\":[\"" << peer_addr << "\"]}}";
+    resp.SetJson(oss.str());
+    return resp;
+}
+
+HttpResponse EtcdServer::MemberRemove(NodeId id) {
+    HttpResponse resp;
+    if (!raft_node_->IsLeader()) {
+        resp.SetError(503, "not leader");
+        return resp;
+    }
+
+    if (id == config_.node_id) {
+        resp.SetError(400, "cannot remove self");
+        return resp;
+    }
+
+    auto peers = raft_node_->GetPeers();
+    if (peers.count(id) == 0) {
+        resp.SetError(404, "member not found");
+        return resp;
+    }
+
+    ConfChange cc;
+    cc.type = ConfChangeType::RemoveNode;
+    cc.node_id = id;
+
+    auto result = raft_node_->ProposeConfChange(cc);
+    if (!result.accepted) {
+        resp.SetError(500, result.error);
+        return resp;
+    }
+
+    std::ostringstream oss;
+    oss << "{\"header\":{\"revision\":0},\"member\":{\"ID\":" << id << "}}";
     resp.SetJson(oss.str());
     return resp;
 }

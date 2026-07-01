@@ -266,6 +266,9 @@ private:
         if (req.method == "POST" && req.path == "/v3/kv/delete") {
             return HandleDelete(req);
         }
+        if (req.method == "POST" && req.path == "/v3/kv/txn") {
+            return HandleTxn(req);
+        }
         if (req.method == "POST" && req.path == "/v3/watch") {
             return HandleWatch(req);
         }
@@ -283,6 +286,12 @@ private:
         }
         if (req.method == "GET" && req.path == "/v3/cluster/info") {
             return server_->ClusterInfo();
+        }
+        if (req.method == "POST" && req.path == "/v3/cluster/member/add") {
+            return HandleMemberAdd(req);
+        }
+        if (req.method == "POST" && req.path == "/v3/cluster/member/remove") {
+            return HandleMemberRemove(req);
         }
         if (req.method == "GET" && req.path == "/") {
             return HandleIndex();
@@ -339,6 +348,10 @@ private:
             return resp;
         }
         return server_->Delete(key);
+    }
+
+    HttpResponse HandleTxn(const HttpRequest& req) {
+        return server_->Txn(req.body);
     }
 
     HttpResponse HandleWatch(const HttpRequest& req) {
@@ -430,6 +443,36 @@ private:
             return resp;
         }
         return server_->LeaseKeepAlive(id);
+    }
+
+    HttpResponse HandleMemberAdd(const HttpRequest& req) {
+        std::string peer_addr = GetParam(req, "peer");
+        if (peer_addr.empty()) {
+            HttpResponse resp;
+            resp.SetError(400, "peer address is required");
+            return resp;
+        }
+        return server_->MemberAdd(peer_addr);
+    }
+
+    HttpResponse HandleMemberRemove(const HttpRequest& req) {
+        NodeId id = 0;
+        auto it = req.query_params.find("ID");
+        if (it != req.query_params.end()) {
+            try {
+                id = std::stoull(it->second);
+            } catch (const std::invalid_argument&) {
+                id = 0;
+            } catch (const std::out_of_range&) {
+                id = 0;
+            }
+        }
+        if (id <= 0) {
+            HttpResponse resp;
+            resp.SetError(400, "ID is required");
+            return resp;
+        }
+        return server_->MemberRemove(id);
     }
 
     HttpResponse HandleIndex() {
