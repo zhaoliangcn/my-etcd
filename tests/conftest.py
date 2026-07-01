@@ -32,8 +32,13 @@ def build_server():
     build_dir.mkdir(exist_ok=True)
 
     # CMake 配置
+    cmake_gen = []
+    import platform
+    if platform.system() == "Windows":
+        cmake_gen = ["-G", "Visual Studio 17 2022", "-A", "x64"]
+
     result = subprocess.run(
-        ["cmake", "..", "-G", "Visual Studio 17 2022", "-A", "x64"],
+        ["cmake", ".."] + cmake_gen,
         cwd=str(build_dir),
         capture_output=True,
         text=True,
@@ -43,8 +48,12 @@ def build_server():
         return False
 
     # CMake 构建
+    build_cfg = []
+    if platform.system() == "Windows":
+        build_cfg = ["--config", "Debug"]
+
     result = subprocess.run(
-        ["cmake", "--build", ".", "--config", "Debug"],
+        ["cmake", "--build", "."] + build_cfg,
         cwd=str(build_dir),
         capture_output=True,
         text=True,
@@ -59,10 +68,16 @@ def build_server():
 
 def find_server_exe():
     """查找编译好的服务端可执行文件"""
-    candidates = [
-        BUILD_DIR / "Debug" / "my-etcd.exe",
-        BUILD_DIR / "my-etcd.exe",
-    ]
+    import platform
+    if platform.system() == "Windows":
+        candidates = [
+            BUILD_DIR / "Debug" / "my-etcd.exe",
+            BUILD_DIR / "my-etcd.exe",
+        ]
+    else:
+        candidates = [
+            BUILD_DIR / "my-etcd",
+        ]
     for c in candidates:
         if c.exists():
             return str(c)
@@ -86,7 +101,7 @@ class EtcdServerProcess:
                 raise RuntimeError("Failed to build my-etcd server")
             exe = find_server_exe()
             if not exe:
-                raise RuntimeError("my-etcd.exe not found after build")
+                raise RuntimeError("my-etcd binary not found after build")
 
         cmd = [
             exe,
@@ -253,6 +268,13 @@ def clean_kv(server):
             resp = self.server.post(f"/v3/kv/range?key={key}")
             data = resp.json()
             kvs = data.get("kvs", [])
+            if kvs:
+                return kvs[0]
+            # Raft 异步提交可能延迟，重试一次
+            time.sleep(0.5)
+            resp = self.server.post(f"/v3/kv/range?key={key}")
+            data = resp.json()
+            kvs = data.get("kvs", [])
             return kvs[0] if kvs else None
 
         def range(self, start, end=""):
@@ -264,6 +286,10 @@ def clean_kv(server):
 
         def delete(self, key):
             resp = self.server.post(f"/v3/kv/delete?key={key}")
+            return resp.json()
+
+        def get_all(self):
+            resp = self.server.post("/v3/kv/range?key=a&range_end={")
             return resp.json()
 
     return KVHelper(server)

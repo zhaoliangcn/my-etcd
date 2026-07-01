@@ -119,53 +119,85 @@ void RaftNode::StartElection() {
     Term term = current_term_.load();
     Index last_log_index = log_.LastIndex();
     Term last_log_term = log_.LastTerm();
-    
+
     RequestVoteRequest req;
     req.term = term;
     req.candidate_id = node_id_;
     req.last_log_index = last_log_index;
     req.last_log_term = last_log_term;
-    
-    // 在单节点或测试模式下，直接成为 Leader
+
+    // 在单节点模式下，直接成为 Leader
     if (peers_.empty()) {
         BecomeLeader();
         return;
     }
-    
-    // 投票计数
-    int votes = 1; // 自己投自己
+
+    // 投票计数：自己投自己
+    int votes = 1;
     int needed = static_cast<int>(peers_.size() + 1) / 2 + 1;
-    
+
     for (auto peer : peers_) {
-        (void)peer;
-        if (transport_) {
-            // 简化处理：在单节点模式下直接成为 Leader
-            // 多节点模式下需要通过 transport 发送 RPC
+        if (!transport_) continue;
+
+        auto resp = transport_->SendRequestVote(peer, req);
+
+        // 如果响应的任期更大，转为 Follower
+        if (resp.term > current_term_.load()) {
+            BecomeFollower(resp.term);
+            return;
+        }
+
+        if (resp.vote_granted) {
+            votes++;
         }
     }
-    
-    // 简化：如果获得多数票则成为 Leader
+
     if (votes >= needed) {
         BecomeLeader();
     }
 }
 
 void RaftNode::BroadcastHeartbeat() {
-    AppendEntriesRequest req;
-    req.term = current_term_.load();
-    req.leader_id = node_id_;
-    req.leader_commit = commit_index_.load();
-    
+    auto current_commit = commit_index_.load();
+
     for (auto peer : peers_) {
-        req.prev_log_index = next_index_[peer] - 1;
-        req.prev_log_term = log_.TermAt(req.prev_log_index);
-        
-        // 获取需要发送的日志
+        Index prev_log_index = next_index_[peer] - 1;
+        Term prev_log_term = log_.TermAt(prev_log_index);
+
         auto entries = log_.EntriesFrom(next_index_[peer]);
+
+        AppendEntriesRequest req;
+        req.term = current_term_.load();
+        req.leader_id = node_id_;
+        req.prev_log_index = prev_log_index;
+        req.prev_log_term = prev_log_term;
         req.entries = entries;
-        
-        if (transport_) {
-            transport_->SendAppendEntries(peer, req);
+        req.leader_commit = current_commit;
+
+        if (!transport_) continue;
+
+        auto resp = transport_->SendAppendEntries(peer, req);
+
+        // 任期更大则转为 Follower
+        if (resp.term > current_term_.load()) {
+            BecomeFollower(resp.term);
+            return;
+        }
+
+        if (resp.success) {
+            // 更新 match_index 和 next_index
+            if (!entries.empty()) {
+                match_index_[peer] = entries.back().index;
+                next_index_[peer] = match_index_[peer] + 1;
+            } else {
+                // 心跳：至少更新到 follower 报告的 last_log_index
+                match_index_[peer] = std::max(match_index_[peer], resp.last_log_index);
+            }
+        } else {
+            // 日志不一致：回退 next_index
+            if (next_index_[peer] > 1) {
+                next_index_[peer]--;
+            }
         }
     }
 }

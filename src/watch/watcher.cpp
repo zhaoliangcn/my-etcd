@@ -13,9 +13,12 @@ WatchEvent Watcher::WaitForEvent(int64_t timeout_ms) {
             [this] { return !events.empty() || cancelled; });
     }
 
-    if (cancelled && events.empty()) {
+    if (events.empty()) {
+        // 超时或 cancelled 但无事件，返回空事件
         WatchEvent ev;
-        ev.type = EventType::DELETE; // 用 DELETE 表示取消
+        ev.type = EventType::PUT;
+        ev.kv.key = "";
+        ev.kv.value = "";
         return ev;
     }
 

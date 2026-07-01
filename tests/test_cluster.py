@@ -75,11 +75,15 @@ class TestServerHealth:
             resp = server.put(f"/v3/kv/put?key=stress_{i}", data=f"data_{i}")
             assert resp.status_code == 200
 
+        # 等待 Raft 提交所有条目
+        import time
+        time.sleep(1)
+
         for i in range(100):
             resp = server.post(f"/v3/kv/range?key=stress_{i}")
             assert resp.status_code == 200
             kvs = resp.json().get("kvs", [])
-            assert len(kvs) == 1
+            assert len(kvs) == 1, f"key stress_{i} not found after write"
             assert kvs[0]["value"] == f"data_{i}"
 
     def test_json_content_type(self, server):

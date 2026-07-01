@@ -117,34 +117,45 @@ void EtcdServer::RaftReadyHandler(const std::vector<RaftEntry>& entries) {
 
 void EtcdServer::ProcessRaftEntries(const std::vector<RaftEntry>& entries) {
     for (const auto& entry : entries) {
-        KeyValue prev_kv;
-        if (watch_mgr_) {
-            auto existing = kvstore_->Get(entry.key);
-            if (existing) {
-                prev_kv = *existing;
-            } else {
-                prev_kv.key = entry.key;
-            }
-        }
-
         if (entry.type == EventType::PUT) {
-            kvstore_->Put(entry.key, entry.value, entry.lease_id);
+            // 原子操作：一次加锁完成读旧值 + 写入新值
+            auto result = kvstore_->PutWithPrev(entry.key, entry.value, entry.lease_id);
 
             // 关联租约
             if (entry.lease_id > 0) {
                 lease_mgr_->Attach(entry.lease_id, entry.key);
             }
-        } else if (entry.type == EventType::DELETE) {
-            kvstore_->Delete(entry.key);
-        }
 
-        // 通知 Watch
-        if (watch_mgr_) {
-            auto kv = kvstore_->Get(entry.key);
-            if (kv) {
+            // 通知 Watch
+            if (watch_mgr_ && result.new_kv) {
                 WatchEvent ev;
-                ev.type = entry.type;
-                ev.kv = *kv;
+                ev.type = EventType::PUT;
+                ev.kv = *result.new_kv;
+                if (result.prev_kv) {
+                    ev.prev_kv = *result.prev_kv;
+                } else {
+                    ev.prev_kv.key = entry.key;
+                }
+                watch_mgr_->Notify(ev);
+            }
+        } else if (entry.type == EventType::DELETE) {
+            KeyValue prev_kv;
+            if (watch_mgr_) {
+                auto existing = kvstore_->Get(entry.key);
+                if (existing) {
+                    prev_kv = *existing;
+                } else {
+                    prev_kv.key = entry.key;
+                }
+            }
+
+            kvstore_->Delete(entry.key);
+
+            // 通知 Watch
+            if (watch_mgr_) {
+                WatchEvent ev;
+                ev.type = EventType::DELETE;
+                ev.kv.key = entry.key;
                 ev.prev_kv = prev_kv;
                 watch_mgr_->Notify(ev);
             }
@@ -276,6 +287,20 @@ HttpResponse EtcdServer::Watch(const std::string& key, Revision start_rev, bool 
     oss << "\"events\":[" << json::WatchEventToJson(event) << "]";
     oss << "}";
     resp.SetJson(oss.str());
+    return resp;
+}
+
+HttpResponse EtcdServer::WatchCancel(LeaseId watch_id) {
+    HttpResponse resp;
+
+    if (watch_mgr_->Cancel(watch_id)) {
+        std::ostringstream oss;
+        oss << "{\"watch_id\":" << watch_id << ",\"canceled\":true}";
+        resp.SetJson(oss.str());
+    } else {
+        resp.SetError(404, "watcher not found");
+    }
+
     return resp;
 }
 

@@ -39,11 +39,11 @@ class Transport {
 public:
     virtual ~Transport() = default;
 
-    // 发送 RequestVote RPC
-    virtual void SendRequestVote(NodeId target, const RequestVoteRequest& req) = 0;
+    // 发送 RequestVote RPC（同步，返回响应）
+    virtual RequestVoteResponse SendRequestVote(NodeId target, const RequestVoteRequest& req) = 0;
 
-    // 发送 AppendEntries RPC
-    virtual void SendAppendEntries(NodeId target, const AppendEntriesRequest& req) = 0;
+    // 发送 AppendEntries RPC（同步，返回响应）
+    virtual AppendEntriesResponse SendAppendEntries(NodeId target, const AppendEntriesRequest& req) = 0;
 
     // 设置回调
     using RequestVoteHandler = std::function<RequestVoteResponse(const RequestVoteRequest&)>;
@@ -57,15 +57,48 @@ public:
     virtual void Stop() = 0;
 };
 
-// 简单的内存传输实现 (用于测试和单机模式)
+// 简单的内存传输实现（用于测试和单机模式）
 class InMemoryTransport : public Transport {
 public:
-    void SendRequestVote(NodeId, const RequestVoteRequest&) override {}
-    void SendAppendEntries(NodeId, const AppendEntriesRequest&) override {}
-    void SetRequestVoteHandler(RequestVoteHandler) override {}
-    void SetAppendEntriesHandler(AppendEntriesHandler) override {}
+    RequestVoteResponse SendRequestVote(NodeId target, const RequestVoteRequest& req) override {
+        (void)target;
+        // 直接调用本地的 handler（进程内路由）
+        if (request_vote_handler_) {
+            return request_vote_handler_(req);
+        }
+        RequestVoteResponse resp;
+        resp.term = 0;
+        resp.vote_granted = false;
+        return resp;
+    }
+
+    AppendEntriesResponse SendAppendEntries(NodeId target, const AppendEntriesRequest& req) override {
+        (void)target;
+        // 直接调用本地的 handler（进程内路由）
+        if (append_entries_handler_) {
+            return append_entries_handler_(req);
+        }
+        AppendEntriesResponse resp;
+        resp.term = 0;
+        resp.success = false;
+        resp.last_log_index = 0;
+        return resp;
+    }
+
+    void SetRequestVoteHandler(RequestVoteHandler handler) override {
+        request_vote_handler_ = std::move(handler);
+    }
+
+    void SetAppendEntriesHandler(AppendEntriesHandler handler) override {
+        append_entries_handler_ = std::move(handler);
+    }
+
     void Start() override {}
     void Stop() override {}
+
+private:
+    RequestVoteHandler request_vote_handler_;
+    AppendEntriesHandler append_entries_handler_;
 };
 
 } // namespace myetcd

@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <cstdio>
 
 namespace myetcd {
 
@@ -14,13 +15,18 @@ SnapshotManager::SnapshotManager(const std::string& snap_dir, int64_t max_snapsh
     if (!fs::exists(snap_dir_, ec)) {
         fs::create_directories(snap_dir_, ec);
     }
+    // 清理可能残留的临时文件
+    fs::remove(snap_dir_ + "/snapshot_tmp", ec);
 }
 
 bool SnapshotManager::CreateSnapshot(Index last_index, Term last_term, const std::vector<uint8_t>& data) {
     std::lock_guard<std::mutex> lock(mu_);
 
-    std::string path = snap_dir_ + "/snapshot_" + std::to_string(last_index);
-    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+    std::string tmp_path = snap_dir_ + "/snapshot_tmp";
+    std::string final_path = snap_dir_ + "/snapshot_" + std::to_string(last_index);
+
+    // 先写入临时文件，确保数据完整后再原子重命名
+    std::ofstream ofs(tmp_path, std::ios::binary | std::ios::trunc);
     if (!ofs) return false;
 
     ofs.write(reinterpret_cast<const char*>(&last_index), sizeof(Index));
@@ -32,8 +38,26 @@ bool SnapshotManager::CreateSnapshot(Index last_index, Term last_term, const std
         ofs.write(reinterpret_cast<const char*>(data.data()), data.size());
     }
 
+    // 确保数据刷到磁盘
+    ofs.flush();
+    // 使用 fsync 确保物理写入（通过 fstream 的 native handle）
+    if (!ofs) return false;
+
     ofs.close();
-    if (!ofs.good()) return false;
+    if (!ofs.good()) {
+        std::error_code ec;
+        fs::remove(tmp_path, ec);
+        return false;
+    }
+
+    // 原子重命名（POSIX 保证 rename 是原子的）
+    std::error_code ec;
+    fs::rename(tmp_path, final_path, ec);
+    if (ec) {
+        std::error_code ec2;
+        fs::remove(tmp_path, ec2);
+        return false;
+    }
 
     CleanupOldSnapshots();
     return true;
@@ -56,7 +80,11 @@ bool SnapshotManager::LoadLatestSnapshot(Snapshot& snapshot) {
                     latest_idx = idx;
                     latest_snap = entry.path().string();
                 }
-            } catch (...) {}
+            } catch (const std::invalid_argument&) {
+                // 文件名解析失败，跳过
+            } catch (const std::out_of_range&) {
+                // 索引溢出，跳过
+            }
         }
     }
 
@@ -89,7 +117,11 @@ void SnapshotManager::CleanupOldSnapshots() {
             try {
                 Index idx = std::stoull(name.substr(9));
                 snapshots.emplace_back(idx, entry.path().string());
-            } catch (...) {}
+            } catch (const std::invalid_argument&) {
+                // 文件名解析失败，跳过
+            } catch (const std::out_of_range&) {
+                // 索引溢出，跳过
+            }
         }
     }
 

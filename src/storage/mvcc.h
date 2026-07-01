@@ -6,7 +6,7 @@
 #include <mutex>
 #include <optional>
 #include <shared_mutex>
-
+#include <atomic>
 namespace myetcd {
 
 // MVCC 版本信息
@@ -16,6 +16,7 @@ struct MvccVersion {
     Revision create_revision;
     bool tombstone; // 是否已删除
     LeaseId lease_id;
+    std::string value; // 该版本对应的 value
 };
 
 // Key 索引 - 跟踪一个 key 的所有版本
@@ -31,7 +32,7 @@ struct KeyIndex {
     std::optional<MvccVersion> Latest() const;
 
     // 添加新版本
-    void Put(Revision rev, LeaseId lease_id);
+    void Put(Revision rev, const std::string& value, LeaseId lease_id);
 
     // 标记删除
     void Tombstone(Revision rev);
@@ -50,7 +51,7 @@ public:
     ~MVCC() = default;
 
     // 写入
-    void Put(const std::string& key, Revision rev, LeaseId lease_id = 0);
+    void Put(const std::string& key, Revision rev, const std::string& value, LeaseId lease_id = 0);
 
     // 删除
     void Delete(const std::string& key, Revision rev);

@@ -42,7 +42,11 @@ bool WAL::Open() {
             try {
                 int seq = std::stoi(name.substr(4, name.size() - 8));
                 if (seq >= wal_seq_) wal_seq_ = seq;
-            } catch (...) {}
+            } catch (const std::invalid_argument&) {
+                // 文件名解析失败，跳过
+            } catch (const std::out_of_range&) {
+                // 序号溢出，跳过
+            }
         }
     }
 
@@ -289,7 +293,11 @@ bool WAL::LoadSnapshot(Snapshot& snapshot) {
                     latest_idx = idx;
                     latest_snap = entry.path().string();
                 }
-            } catch (...) {}
+            } catch (const std::invalid_argument&) {
+                // 快照文件名解析失败，跳过
+            } catch (const std::out_of_range&) {
+                // 索引溢出，跳过
+            }
         }
     }
 

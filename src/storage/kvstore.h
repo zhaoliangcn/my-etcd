@@ -9,6 +9,12 @@
 
 namespace myetcd {
 
+struct PutWithPrevResult {
+    Revision rev;
+    std::optional<KeyValue> prev_kv;
+    std::optional<KeyValue> new_kv;
+};
+
 // KVStore - 协调 MVCC 索引和后端持久化存储
 class KVStore {
 public:
@@ -26,6 +32,9 @@ public:
 
     // 写入
     Revision Put(const std::string& key, const std::string& value, LeaseId lease_id = 0);
+
+    // 原子写入（一次加锁中读取旧值、写入新值，返回旧值和新值）
+    PutWithPrevResult PutWithPrev(const std::string& key, const std::string& value, LeaseId lease_id = 0);
 
     // 删除
     Revision Delete(const std::string& key);

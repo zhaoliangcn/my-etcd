@@ -77,7 +77,7 @@ bool Backend::FlushToDisk() {
 bool Backend::Put(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lock(mu_);
     store_[key] = value;
-    return FlushToDisk();
+    return true;
 }
 
 std::optional<std::string> Backend::Get(const std::string& key) {
@@ -92,7 +92,7 @@ std::optional<std::string> Backend::Get(const std::string& key) {
 bool Backend::Delete(const std::string& key) {
     std::lock_guard<std::mutex> lock(mu_);
     store_.erase(key);
-    return FlushToDisk();
+    return true;
 }
 
 std::vector<KeyValue> Backend::Range(const std::string& start, const std::string& end, int64_t limit) {
@@ -133,7 +133,7 @@ bool Backend::BatchPut(const std::map<std::string, std::string>& kvs) {
     for (const auto& [key, value] : kvs) {
         store_[key] = value;
     }
-    return FlushToDisk();
+    return true;
 }
 
 std::vector<std::string> Backend::Keys() {

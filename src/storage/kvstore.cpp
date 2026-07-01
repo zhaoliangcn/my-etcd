@@ -1,6 +1,7 @@
 #include "storage/kvstore.h"
 #include <cstring>
 #include <iostream>
+#include <atomic>
 
 namespace myetcd {
 
@@ -27,10 +28,35 @@ Revision KVStore::Put(const std::string& key, const std::string& value, LeaseId 
     std::lock_guard<std::mutex> lock(mu_);
 
     Revision rev = mvcc_.AllocateRevision();
-    mvcc_.Put(key, rev, lease_id);
+    mvcc_.Put(key, rev, value, lease_id);
     backend_.Put(key, value);
 
     return rev;
+}
+
+PutWithPrevResult KVStore::PutWithPrev(const std::string& key, const std::string& value, LeaseId lease_id) {
+    PutWithPrevResult result;
+    std::lock_guard<std::mutex> lock(mu_);
+
+    // 读取旧值（在写入之前，同一把锁保护）
+    result.prev_kv = mvcc_.Get(key, 0);
+    if (result.prev_kv) {
+        auto val = backend_.Get(key);
+        if (val) result.prev_kv->value = *val;
+    }
+
+    // 写入新值
+    result.rev = mvcc_.AllocateRevision();
+    mvcc_.Put(key, result.rev, value, lease_id);
+    backend_.Put(key, value);
+
+    // 读取新值
+    result.new_kv = mvcc_.Get(key, 0);
+    if (result.new_kv) {
+        result.new_kv->value = value;
+    }
+
+    return result;
 }
 
 Revision KVStore::Delete(const std::string& key) {
@@ -49,9 +75,13 @@ std::optional<KeyValue> KVStore::Get(const std::string& key, Revision at_rev) {
     auto kv = mvcc_.Get(key, at_rev);
     if (!kv) return std::nullopt;
 
-    auto val = backend_.Get(key);
-    if (val) {
-        kv->value = *val;
+    // 最新版本（at_rev==0）：value 来自 Backend（最准确）
+    // 历史版本（at_rev!=0）：value 来自 MVCC 版本记录
+    if (at_rev == 0) {
+        auto val = backend_.Get(key);
+        if (val) {
+            kv->value = *val;
+        }
     }
 
     return kv;
@@ -100,7 +130,7 @@ void KVStore::RestoreFromEntries(const std::vector<RaftEntry>& entries) {
 
     for (const auto& entry : entries) {
         if (entry.type == EventType::PUT) {
-            mvcc_.Put(entry.key, entry.index, entry.lease_id);
+            mvcc_.Put(entry.key, entry.index, entry.value, entry.lease_id);
             backend_.Put(entry.key, entry.value);
         } else if (entry.type == EventType::DELETE) {
             mvcc_.Delete(entry.key, entry.index);
@@ -169,8 +199,15 @@ bool KVStore::Deserialize(const std::vector<uint8_t>& data) {
         kvs[key] = value;
     }
 
-    // 清空并重建
+    // 清空并重建后端存储
     backend_.BatchPut(kvs);
+
+    // 重建 MVCC 索引（每个 key 创建一个索引条目）
+    for (const auto& [key, value] : kvs) {
+        Revision rev = mvcc_.AllocateRevision();
+        mvcc_.Put(key, rev, value, 0);
+    }
+
     return true;
 }
 

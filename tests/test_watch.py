@@ -155,3 +155,47 @@ class TestWatch:
 
         # 至少收到一个事件
         assert len(events) >= 1
+
+    def test_watch_cancel(self, server):
+        """取消监听"""
+        import urllib.parse
+
+        # 创建 watcher 并获取 watch_id
+        watch_id = None
+        error = []
+
+        def do_watch():
+            nonlocal watch_id
+            try:
+                resp = requests.post(
+                    f"http://localhost:{server.port}/v3/watch?key=cancel_test",
+                    timeout=10,
+                )
+                data = resp.json()
+                watch_id = data.get("watch_id")
+            except Exception as e:
+                error.append(str(e))
+
+        watch_thread = threading.Thread(target=do_watch, daemon=True)
+        watch_thread.start()
+        time.sleep(0.5)
+
+        # 取消该 watcher
+        if watch_id:
+            resp = requests.post(
+                f"http://localhost:{server.port}/v3/watch/cancel?ID={watch_id}",
+                timeout=5,
+            )
+            assert resp.status_code == 200
+            cancel_data = resp.json()
+            assert cancel_data.get("canceled") is True
+
+        watch_thread.join(timeout=5)
+
+    def test_watch_cancel_nonexistent(self, server):
+        """取消不存在的 watcher"""
+        resp = requests.post(
+            f"http://localhost:{server.port}/v3/watch/cancel?ID=99999",
+            timeout=5,
+        )
+        assert resp.status_code == 404

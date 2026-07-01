@@ -124,19 +124,23 @@ void LeaseManager::CheckExpiry() {
     while (running_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(check_interval_ms_));
 
-        std::vector<LeaseId> expired_ids;
-        {
-            std::lock_guard<std::mutex> lock(mu_);
-            auto now = std::chrono::steady_clock::now();
-            for (auto& [id, lease] : leases_) {
-                if (now >= lease.expiry) {
-                    expired_ids.push_back(id);
+        // 在一次加锁中完成检查、回调和删除，消除 TOCTOU 竞态
+        std::lock_guard<std::mutex> lock(mu_);
+        auto now = std::chrono::steady_clock::now();
+        auto it = leases_.begin();
+        while (it != leases_.end()) {
+            if (now >= it->second.expiry) {
+                // 先触发过期回调
+                if (expire_callback_) {
+                    for (const auto& key : it->second.attached_keys) {
+                        expire_callback_(key);
+                    }
                 }
+                // 再删除租约
+                it = leases_.erase(it);
+            } else {
+                ++it;
             }
-        }
-
-        for (auto id : expired_ids) {
-            Revoke(id);
         }
     }
 }

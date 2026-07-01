@@ -164,7 +164,9 @@ private:
                 value.erase(0, value.find_first_not_of(" \t"));
                 try {
                     content_length = std::stoi(value);
-                } catch (...) {
+                } catch (const std::invalid_argument&) {
+                    content_length = 0;
+                } catch (const std::out_of_range&) {
                     content_length = 0;
                 }
                 break;
@@ -235,7 +237,13 @@ private:
         int content_length = 0;
         for (const auto& h : req.headers) {
             if (h.first == "Content-Length" || h.first == "content-length" || h.first == "CONTENT-LENGTH") {
-                content_length = std::stoi(h.second);
+                try {
+                    content_length = std::stoi(h.second);
+                } catch (const std::invalid_argument&) {
+                    content_length = 0;
+                } catch (const std::out_of_range&) {
+                    content_length = 0;
+                }
                 break;
             }
         }
@@ -259,6 +267,9 @@ private:
         }
         if (req.method == "POST" && req.path == "/v3/watch") {
             return HandleWatch(req);
+        }
+        if (req.method == "POST" && req.path == "/v3/watch/cancel") {
+            return HandleWatchCancel(req);
         }
         if (req.method == "POST" && req.path == "/v3/lease/grant") {
             return HandleLeaseGrant(req);
@@ -289,12 +300,23 @@ private:
     HttpResponse HandlePut(const HttpRequest& req) {
         std::string key = GetParam(req, "key");
         std::string value = req.body;
+        LeaseId lease_id = 0;
+        auto it = req.query_params.find("lease");
+        if (it != req.query_params.end()) {
+            try {
+                lease_id = std::stoll(it->second);
+            } catch (const std::invalid_argument&) {
+                lease_id = 0;
+            } catch (const std::out_of_range&) {
+                lease_id = 0;
+            }
+        }
         if (key.empty()) {
             HttpResponse resp;
             resp.SetError(400, "key is required");
             return resp;
         }
-        return server_->Put(key, value);
+        return server_->Put(key, value, lease_id);
     }
 
     HttpResponse HandleRange(const HttpRequest& req) {
@@ -329,11 +351,37 @@ private:
         return server_->Watch(key, 0, prefix);
     }
 
+    HttpResponse HandleWatchCancel(const HttpRequest& req) {
+        LeaseId watch_id = 0;
+        auto it = req.query_params.find("ID");
+        if (it != req.query_params.end()) {
+            try {
+                watch_id = std::stoll(it->second);
+            } catch (const std::invalid_argument&) {
+                watch_id = 0;
+            } catch (const std::out_of_range&) {
+                watch_id = 0;
+            }
+        }
+        if (watch_id <= 0) {
+            HttpResponse resp;
+            resp.SetError(400, "ID is required");
+            return resp;
+        }
+        return server_->WatchCancel(watch_id);
+    }
+
     HttpResponse HandleLeaseGrant(const HttpRequest& req) {
         int64_t ttl = 0;
         auto it = req.query_params.find("TTL");
         if (it != req.query_params.end()) {
-            ttl = std::stoll(it->second);
+            try {
+                ttl = std::stoll(it->second);
+            } catch (const std::invalid_argument&) {
+                ttl = 0;
+            } catch (const std::out_of_range&) {
+                ttl = 0;
+            }
         }
         if (ttl <= 0) {
             HttpResponse resp;
@@ -347,7 +395,13 @@ private:
         LeaseId id = 0;
         auto it = req.query_params.find("ID");
         if (it != req.query_params.end()) {
-            id = std::stoll(it->second);
+            try {
+                id = std::stoll(it->second);
+            } catch (const std::invalid_argument&) {
+                id = 0;
+            } catch (const std::out_of_range&) {
+                id = 0;
+            }
         }
         if (id <= 0) {
             HttpResponse resp;
@@ -361,7 +415,13 @@ private:
         LeaseId id = 0;
         auto it = req.query_params.find("ID");
         if (it != req.query_params.end()) {
-            id = std::stoll(it->second);
+            try {
+                id = std::stoll(it->second);
+            } catch (const std::invalid_argument&) {
+                id = 0;
+            } catch (const std::out_of_range&) {
+                id = 0;
+            }
         }
         if (id <= 0) {
             HttpResponse resp;

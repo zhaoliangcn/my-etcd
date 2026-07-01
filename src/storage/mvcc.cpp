@@ -17,9 +17,10 @@ std::optional<MvccVersion> KeyIndex::Latest() const {
     return versions.back();
 }
 
-void KeyIndex::Put(Revision rev, LeaseId lease_id) {
+void KeyIndex::Put(Revision rev, const std::string& value, LeaseId lease_id) {
     MvccVersion ver;
     ver.revision = rev;
+    ver.value = value;
     ver.lease_id = lease_id;
     ver.tombstone = false;
 
@@ -58,30 +59,28 @@ bool KeyIndex::IsDeleted() const {
 }
 
 void KeyIndex::Compact(Revision rev) {
-    auto it = std::remove_if(versions.begin(), versions.end(),
+    auto kept_end = std::remove_if(versions.begin(), versions.end(),
         [rev](const MvccVersion& v) {
             return v.revision < rev && !v.tombstone;
         });
-    if (it != versions.begin()) {
-        versions.erase(versions.begin(), it);
-    }
+    versions.erase(kept_end, versions.end());
 }
 
 // MVCC 实现
 
 MVCC::MVCC() {}
 
-void MVCC::Put(const std::string& key, Revision rev, LeaseId lease_id) {
+void MVCC::Put(const std::string& key, Revision rev, const std::string& value, LeaseId lease_id) {
     std::unique_lock<std::shared_mutex> lock(mu_);
 
     auto it = index_.find(key);
     if (it == index_.end()) {
         KeyIndex ki;
         ki.key = key;
-        ki.Put(rev, lease_id);
+        ki.Put(rev, value, lease_id);
         index_[key] = std::move(ki);
     } else {
-        it->second.Put(rev, lease_id);
+        it->second.Put(rev, value, lease_id);
     }
 }
 
@@ -106,22 +105,17 @@ std::optional<KeyValue> MVCC::Get(const std::string& key, Revision at_rev) {
     if (it == index_.end()) return std::nullopt;
 
     const auto& ki = it->second;
-    if (ki.IsDeleted()) return std::nullopt;
+    if (ki.versions.empty() || ki.IsDeleted()) return std::nullopt;
 
     const MvccVersion* ver = nullptr;
     if (at_rev == 0) {
-        auto latest = ki.Latest();
-        if (!latest || latest->tombstone) return std::nullopt;
-        ver = &ki.versions.back(); // 需要重新获取引用
+        // 获取最新版本
+        ver = &ki.versions.back();
     } else {
-        // 找到 at_rev 之前的最新版本
-        for (auto it2 = ki.versions.rbegin(); it2 != ki.versions.rend(); ++it2) {
-            if (it2->revision <= at_rev && !it2->tombstone) {
-                // 需要返回副本
-                auto opt = ki.Get(it2->revision);
-                if (opt && !opt->tombstone) {
-                    ver = &ki.versions[ki.versions.size() - 1 - (it2 - ki.versions.rbegin())];
-                }
+        // 找到 <= at_rev 的最新非 tombstone 版本（反向查找）
+        for (auto rit = ki.versions.rbegin(); rit != ki.versions.rend(); ++rit) {
+            if (rit->revision <= at_rev && !rit->tombstone) {
+                ver = &(*rit);
                 break;
             }
         }
@@ -131,6 +125,7 @@ std::optional<KeyValue> MVCC::Get(const std::string& key, Revision at_rev) {
 
     KeyValue kv;
     kv.key = key;
+    kv.value = ver->value;
     kv.create_revision = ver->create_revision;
     kv.mod_revision = ver->revision;
     kv.version = ver->version;
@@ -166,6 +161,7 @@ std::vector<KeyValue> MVCC::Range(const std::string& start, const std::string& e
 
         KeyValue kv;
         kv.key = it->first;
+        kv.value = ver->value;
         kv.create_revision = ver->create_revision;
         kv.mod_revision = ver->revision;
         kv.version = ver->version;
@@ -205,7 +201,7 @@ std::vector<KeyValue> MVCC::PrefixRange(const std::string& prefix,
 
         KeyValue kv;
         kv.key = it->first;
-        kv.create_revision = ver->create_revision;
+        kv.value = ver->value;
         kv.mod_revision = ver->revision;
         kv.version = ver->version;
         kv.lease_id = ver->lease_id;

@@ -41,6 +41,7 @@ public:
 
     // Watch 操作
     HttpResponse Watch(const std::string& key, Revision start_rev = 0, bool prefix = false);
+    HttpResponse WatchCancel(LeaseId watch_id);
 
     // Lease 操作
     HttpResponse LeaseGrant(int64_t ttl_seconds);

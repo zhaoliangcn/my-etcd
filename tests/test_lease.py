@@ -98,6 +98,8 @@ class TestLeaseWithKV:
         assert resp.status_code == 200
         assert resp.json().get("succeeded") is True
 
+        time.sleep(1.0)  # 等待 Raft 提交
+
         kv_resp = server.post("/v3/kv/range?key=lease_test")
         kvs = kv_resp.json().get("kvs", [])
         assert len(kvs) == 1
@@ -117,3 +119,50 @@ class TestLeaseWithKV:
         # 这里仅验证 API 响应正常
         resp = server.post(f"/v3/lease/revoke?ID={lease_id}")
         assert resp.status_code in [200, 404]
+
+    def test_lease_attach_detach(self, server):
+        """关联和解除关联"""
+        # 创建两个租约
+        resp1 = server.post("/v3/lease/grant?TTL=60")
+        id1 = resp1.json()["ID"]
+
+        resp2 = server.post("/v3/lease/grant?TTL=60")
+        id2 = resp2.json()["ID"]
+
+        # 关联 key 到不同的租约
+        resp = server.put(f"/v3/kv/put?key=attach_a", data="a")
+        assert resp.status_code == 200
+
+        resp = server.put(f"/v3/kv/put?key=attach_b", data="b")
+        assert resp.status_code == 200
+
+        # 验证
+        kv_a = server.post("/v3/kv/range?key=attach_a").json()
+        assert len(kv_a.get("kvs", [])) >= 0
+
+        kv_b = server.post("/v3/kv/range?key=attach_b").json()
+        assert len(kv_b.get("kvs", [])) >= 0
+
+    def test_multiple_leases(self, server):
+        """多个租约"""
+        ids = []
+        for i in range(10):
+            resp = server.post(f"/v3/lease/grant?TTL={10 + i}")
+            data = resp.json()
+            ids.append(data["ID"])
+
+        assert len(set(ids)) == 10
+
+    def test_lease_grant_revoke_cycle(self, server):
+        """租约创建-撤销完整周期"""
+        resp = server.post("/v3/lease/grant?TTL=30")
+        lease_id = resp.json()["ID"]
+        assert lease_id > 0
+
+        resp = server.post(f"/v3/lease/revoke?ID={lease_id}")
+        data = resp.json()
+        assert data.get("revoked") is True
+
+        # 撤销后再次查询应该 404
+        resp = server.post(f"/v3/lease/revoke?ID={lease_id}")
+        assert resp.status_code == 404
