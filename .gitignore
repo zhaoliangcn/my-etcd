@@ -5,4 +5,5 @@ build/
 *.pdb
 *.log
 .vs/
-tests/debug_data/tests/__pycache__/
+tests/__pycache__/
+tests/debug_data/
