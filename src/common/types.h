@@ -1,5 +1,11 @@
 #pragma once
 
+// Workaround: some system/transitive headers may define `entry` as a macro,
+// which corrupts identifiers like `RaftEntry` during preprocessing.
+#ifdef entry
+#undef entry
+#endif
+
 #include <cstdint>
 #include <string>
 #include <vector>
