@@ -88,10 +88,12 @@ void TcpTransport::SetPeerAddresses(const std::map<NodeId, std::string>& peers) 
 }
 
 void TcpTransport::SetRequestVoteHandler(RequestVoteHandler handler) {
+    std::lock_guard<std::mutex> lock(handler_mu_);
     request_vote_handler_ = std::move(handler);
 }
 
 void TcpTransport::SetAppendEntriesHandler(AppendEntriesHandler handler) {
+    std::lock_guard<std::mutex> lock(handler_mu_);
     append_entries_handler_ = std::move(handler);
 }
 
@@ -157,7 +159,14 @@ void TcpTransport::ListenerLoop() {
             break;
         }
 
-        HandleClient(client_fd);
+        // 设置读超时防止慢客户端阻塞
+        struct timeval tv;
+        tv.tv_sec = 5;
+        tv.tv_usec = 0;
+        setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        // 每个客户端在独立线程处理，避免阻塞其他连接
+        std::thread(&TcpTransport::HandleClient, this, client_fd).detach();
     }
 }
 
@@ -199,7 +208,7 @@ void TcpTransport::HandleClient(int client_fd) {
     // 处理消息
     auto resp_data = ProcessIncomingMsg(msg_data);
 
-    // 发送响应
+    // 发送响应（处理部分写入）
     uint32_t resp_len = static_cast<uint32_t>(resp_data.size());
     uint8_t resp_header[4];
     resp_header[0] = static_cast<uint8_t>(resp_len >> 24);
@@ -207,9 +216,20 @@ void TcpTransport::HandleClient(int client_fd) {
     resp_header[2] = static_cast<uint8_t>(resp_len >> 8);
     resp_header[3] = static_cast<uint8_t>(resp_len);
 
-    write(client_fd, resp_header, 4);
+    auto send_all = [](int fd, const void* buf, size_t len) -> bool {
+        const char* ptr = static_cast<const char*>(buf);
+        while (len > 0) {
+            ssize_t n = write(fd, ptr, len);
+            if (n <= 0) return false;
+            ptr += n;
+            len -= n;
+        }
+        return true;
+    };
+
+    send_all(client_fd, resp_header, 4);
     if (!resp_data.empty()) {
-        write(client_fd, resp_data.data(), resp_data.size());
+        send_all(client_fd, resp_data.data(), resp_data.size());
     }
 
     close(client_fd);
@@ -230,11 +250,14 @@ std::vector<uint8_t> TcpTransport::ProcessIncomingMsg(const std::vector<uint8_t>
         req.last_log_term = reader.ReadU64();
 
         RequestVoteResponse resp;
-        if (request_vote_handler_) {
-            resp = request_vote_handler_(req);
-        } else {
-            resp.term = 0;
-            resp.vote_granted = false;
+        {
+            std::lock_guard<std::mutex> lock(handler_mu_);
+            if (request_vote_handler_) {
+                resp = request_vote_handler_(req);
+            } else {
+                resp.term = 0;
+                resp.vote_granted = false;
+            }
         }
 
         BinaryWriter w;
@@ -272,12 +295,15 @@ std::vector<uint8_t> TcpTransport::ProcessIncomingMsg(const std::vector<uint8_t>
         }
 
         AppendEntriesResponse resp;
-        if (append_entries_handler_) {
-            resp = append_entries_handler_(req);
-        } else {
-            resp.term = 0;
-            resp.success = false;
-            resp.last_log_index = 0;
+        {
+            std::lock_guard<std::mutex> lock(handler_mu_);
+            if (append_entries_handler_) {
+                resp = append_entries_handler_(req);
+            } else {
+                resp.term = 0;
+                resp.success = false;
+                resp.last_log_index = 0;
+            }
         }
 
         BinaryWriter w;
@@ -325,7 +351,7 @@ std::vector<uint8_t> TcpTransport::SendAndReceive(const std::string& addr,
         return {};
     }
 
-    // 发送请求头（4 字节长度）和请求体
+    // 发送请求头和请求体（处理部分写入）
     uint32_t req_len = static_cast<uint32_t>(req_data.size());
     uint8_t header[4];
     header[0] = static_cast<uint8_t>(req_len >> 24);
@@ -333,8 +359,21 @@ std::vector<uint8_t> TcpTransport::SendAndReceive(const std::string& addr,
     header[2] = static_cast<uint8_t>(req_len >> 8);
     header[3] = static_cast<uint8_t>(req_len);
 
-    write(fd, header, 4);
-    write(fd, req_data.data(), req_data.size());
+    auto send_all = [](int fd, const void* buf, size_t len) -> bool {
+        const char* ptr = static_cast<const char*>(buf);
+        while (len > 0) {
+            ssize_t n = write(fd, ptr, len);
+            if (n <= 0) return false;
+            ptr += n;
+            len -= n;
+        }
+        return true;
+    };
+
+    if (!send_all(fd, header, 4) || !send_all(fd, req_data.data(), req_data.size())) {
+        close(fd);
+        return {};
+    }
 
     // 读取响应头（4 字节长度）
     uint8_t resp_len_buf[4];

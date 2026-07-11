@@ -77,6 +77,7 @@ private:
 
     std::string dir_;
     std::fstream wal_file_;
+    int wal_fd_ = -1;  // 用于 fsync
     int wal_seq_ = 0;
     mutable std::mutex mu_;
     Index last_index_ = 0;

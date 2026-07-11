@@ -133,8 +133,8 @@ private:
         char buffer[4096];
         int total_read = 0;
 
-        // 读取请求头
-        while (total_read < 4096 * 4) {
+        // 读取请求头（增大限制到 64KB）
+        while (total_read < 4096 * 16) {
             int n = recv(client, buffer, sizeof(buffer) - 1, 0);
             if (n <= 0) break;
             buffer[n] = '\0';
@@ -150,7 +150,7 @@ private:
         }
         header_end += 4; // 跳过 \r\n\r\n
 
-        // 从请求头中提取 Content-Length
+        // 从请求头中提取 Content-Length（大小写不敏感）
         int content_length = 0;
         std::string header_part = request_str.substr(0, header_end);
         std::istringstream iss(header_part);
@@ -161,8 +161,10 @@ private:
             size_t colon = line.find(':');
             if (colon == std::string::npos) continue;
             std::string key = line.substr(0, colon);
-            // 大小写不敏感比较
-            if (key == "Content-Length" || key == "content-length" || key == "CONTENT-LENGTH") {
+            // 转小写比较
+            std::string key_lower = key;
+            std::transform(key_lower.begin(), key_lower.end(), key_lower.begin(), ::tolower);
+            if (key_lower == "content-length") {
                 std::string value = line.substr(colon + 1);
                 value.erase(0, value.find_first_not_of(" \t"));
                 try {
@@ -179,7 +181,7 @@ private:
         // 读取 body（如果还有未读取的）
         int body_received = static_cast<int>(request_str.size()) - static_cast<int>(header_end);
         if (body_received < 0) body_received = 0;
-        while (body_received < content_length && total_read < 4096 * 4) {
+        while (body_received < content_length && total_read < 4096 * 16) {
             int n = recv(client, buffer, sizeof(buffer) - 1, 0);
             if (n <= 0) break;
             buffer[n] = '\0';
@@ -247,7 +249,9 @@ private:
         // Body - 大小写不敏感查找 Content-Length
         int content_length = 0;
         for (const auto& h : req.headers) {
-            if (h.first == "Content-Length" || h.first == "content-length" || h.first == "CONTENT-LENGTH") {
+            std::string key_lower = h.first;
+            std::transform(key_lower.begin(), key_lower.end(), key_lower.begin(), ::tolower);
+            if (key_lower == "content-length") {
                 try {
                     content_length = std::stoi(h.second);
                 } catch (const std::invalid_argument&) {
@@ -334,6 +338,19 @@ private:
         if (key.empty()) {
             HttpResponse resp;
             resp.SetError(400, "key is required");
+            return resp;
+        }
+        // 限制 key/value 大小
+        constexpr size_t kMaxKeyLen = 1024 * 1024;      // 1MB
+        constexpr size_t kMaxValueLen = 8 * 1024 * 1024; // 8MB
+        if (key.size() > kMaxKeyLen) {
+            HttpResponse resp;
+            resp.SetError(400, "key too large (max 1MB)");
+            return resp;
+        }
+        if (value.size() > kMaxValueLen) {
+            HttpResponse resp;
+            resp.SetError(400, "value too large (max 8MB)");
             return resp;
         }
         return server_->Put(key, value, lease_id);

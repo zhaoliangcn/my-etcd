@@ -65,10 +65,6 @@ public:
     // 分配 revision
     Revision AllocateRevision() { return mvcc_.AllocateRevision(); }
 
-    // 获取底层 MVCC 索引
-    MVCC& GetMVCC() { return mvcc_; }
-    Backend& GetBackend() { return backend_; }
-
     // 序列化所有数据 (用于快照)
     std::vector<uint8_t> Serialize();
 

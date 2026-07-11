@@ -2,6 +2,8 @@
 #include <filesystem>
 #include <iostream>
 #include <cstring>
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace myetcd {
 
@@ -59,6 +61,12 @@ bool WAL::Open() {
         wal_file_.open(WalFilePath(wal_seq_), std::ios::in | std::ios::out | std::ios::binary | std::ios::app);
     }
 
+    // 打开 fd 用于 fsync
+    wal_fd_ = ::open(WalFilePath(wal_seq_).c_str(), O_RDWR);
+    if (wal_fd_ < 0) {
+        std::cerr << "[WAL] Warning: cannot open fd for fsync" << std::endl;
+    }
+
     return wal_file_.is_open();
 }
 
@@ -67,6 +75,11 @@ void WAL::Close() {
     if (wal_file_.is_open()) {
         wal_file_.flush();
         wal_file_.close();
+    }
+    if (wal_fd_ >= 0) {
+        ::fsync(wal_fd_);
+        ::close(wal_fd_);
+        wal_fd_ = -1;
     }
 }
 
@@ -256,6 +269,9 @@ bool WAL::AppendEntries(const std::vector<RaftEntry>& entries) {
     }
 
     wal_file_.flush();
+    if (wal_fd_ >= 0) {
+        ::fsync(wal_fd_);
+    }
     return wal_file_.good();
 }
 
@@ -370,6 +386,10 @@ bool WAL::TruncateFrom(Index idx) {
     std::lock_guard<std::mutex> lock(mu_);
     // 简化的截断实现：重建 WAL 文件
     wal_file_.close();
+    if (wal_fd_ >= 0) {
+        ::close(wal_fd_);
+        wal_fd_ = -1;
+    }
 
     auto entries = ReadAllEntriesUnlocked();
     std::vector<RaftEntry> kept;
@@ -396,6 +416,9 @@ bool WAL::TruncateFrom(Index idx) {
     }
 
     wal_file_.flush();
+    // 重新打开 fd 用于后续 fsync
+    wal_fd_ = ::open(WalFilePath(wal_seq_).c_str(), O_RDWR);
+
     last_index_ = kept.empty() ? idx - 1 : kept.back().index;
     return true;
 }
@@ -409,6 +432,9 @@ bool WAL::Sync() {
     std::lock_guard<std::mutex> lock(mu_);
     if (wal_file_.is_open()) {
         wal_file_.flush();
+        if (wal_fd_ >= 0) {
+            ::fsync(wal_fd_);
+        }
         return wal_file_.good();
     }
     return false;

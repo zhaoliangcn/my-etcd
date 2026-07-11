@@ -91,6 +91,7 @@ private:
     std::mutex peer_mu_;
 
     // 回调
+    mutable std::mutex handler_mu_;
     RequestVoteHandler request_vote_handler_;
     AppendEntriesHandler append_entries_handler_;
 };

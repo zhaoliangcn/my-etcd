@@ -390,14 +390,14 @@ HttpResponse EtcdServer::Txn(const std::string& request_body) {
             entry.value = op_value;
             raft_node_->Propose(entry);
 
-            results.push_back("{\"type\":\"PUT\",\"key\":\"" + op_key + "\"}");
+            results.push_back("{\"type\":\"PUT\",\"key\":\"" + json::Escape(op_key) + "\"}");
         } else if (op_type == "DELETE" && !op_key.empty()) {
             RaftEntry entry;
             entry.type = EventType::DELETE;
             entry.key = op_key;
             raft_node_->Propose(entry);
 
-            results.push_back("{\"type\":\"DELETE\",\"key\":\"" + op_key + "\"}");
+            results.push_back("{\"type\":\"DELETE\",\"key\":\"" + json::Escape(op_key) + "\"}");
         }
 
         op_pos = exec_section.find('{', op_end + 1);
@@ -518,7 +518,7 @@ HttpResponse EtcdServer::ClusterInfo() {
     std::ostringstream oss;
     oss << "{";
     oss << "\"node_id\":" << config_.node_id << ",";
-    oss << "\"name\":\"" << config_.name << "\",";
+    oss << "\"name\":\"" << json::Escape(config_.name) << "\",";
     oss << "\"state\":\"" << state_str << "\",";
     oss << "\"term\":" << raft_node_->CurrentTerm() << ",";
     oss << "\"leader_id\":" << raft_node_->LeaderId() << ",";

@@ -48,14 +48,21 @@ int64_t WatchManager::Watch(const std::string& key, Revision start_rev, bool pre
 }
 
 bool WatchManager::Cancel(int64_t watch_id) {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::shared_ptr<Watcher> w;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        auto it = watchers_.find(watch_id);
+        if (it == watchers_.end()) return false;
+        w = it->second;
+        watchers_.erase(it);
+    }
 
-    auto it = watchers_.find(watch_id);
-    if (it == watchers_.end()) return false;
-
-    it->second->cancelled = true;
-    it->second->event_cv.notify_all();
-    watchers_.erase(it);
+    // 在 mu_ 外设置 cancelled，但需要持有 event_mu 以避免与 PushEvent 竞争
+    {
+        std::lock_guard<std::mutex> elock(w->event_mu);
+        w->cancelled = true;
+    }
+    w->event_cv.notify_all();
     return true;
 }
 
