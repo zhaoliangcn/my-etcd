@@ -53,23 +53,29 @@
 | H25 | KVStore Serialize 丢失 MVCC 元数据 | (保留现有实现) |
 | H26 | ClusterInfo JSON 注入 | 使用 `json::Escape` |
 
-### MEDIUM (7/36 已修复)
+### MEDIUM (11/36 已修复)
 
 | # | 问题 | 修复方式 |
 |---|------|----------|
+| M1 | `ApplyConfChange` 无安全检查 | 添加无效ID、自删除、仲裁校验 |
 | M5 | `RaftLog::TruncateTo` 边界不清除 `first_index_` | 清空时设置 `first_index_ = idx + 1` |
 | M6 | WAL TruncateFrom 不删除旧文件 | 添加循环删除旧 WAL 文件 |
 | M12 | 快照 `data_size` 无上限 | (保留现有检查) |
+| M14 | Watch 仅返回单个事件 | 单次返回最多 64 个已排队事件 |
+| M15 | Watcher 事件队列无上限 | 限制最大 1024，满时丢弃最旧事件 |
 | M17 | TCP Listener 单线程 | 改为每客户端独立线程 |
 | M20 | Key DELETE 不从 Lease 解绑 | (保留现有实现) |
 | M21 | Txn JSON 注入 | 使用 `json::Escape` |
+| M22 | RaftLog Append 无序验证 | 验证条目索引单调递增 |
 | M28 | KVStore 用 `std::mutex` | (保留，读多写少场景可接受) |
 
-### LOW (1/17 已修复)
+### LOW (3/17 已修复)
 
 | # | 问题 | 修复方式 |
 |---|------|----------|
-| L1 | `ApplySnapshot` 无输入校验 | (保留现有实现) |
+| L1 | `ApplySnapshot` 无输入校验 | 校验快照索引不小于 commit_index |
+| L8 | `WatchEvent::type` 未初始化 | 添加默认初始化 `EventType::PUT` |
+| L11 | RaftNode 成员默认初始化 | Watcher 字段添加默认值 |
 
 ## 统计概览
 
@@ -77,8 +83,8 @@
 |--------|------|--------|------|
 | **CRITICAL** | 11 | **11** | 0 |
 | **HIGH** | 26 | **25** | 1 |
-| **MEDIUM** | 36 | **7** | 29 |
-| **LOW** | 17 | **1** | 16 |
+| **MEDIUM** | 36 | **11** | 25 |
+| **LOW** | 17 | **3** | 14 |
 
 ---
 
