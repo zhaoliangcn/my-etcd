@@ -80,7 +80,9 @@ public:
 #ifdef _WIN32
         setsockopt(listen_socket_, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
 #else
-        setsockopt(listen_socket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        if (setsockopt(listen_socket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+            std::cerr << "[HTTP] Warning: SO_REUSEADDR failed" << std::endl;
+        }
 #endif
 
         sockaddr_in addr{};
@@ -492,6 +494,11 @@ private:
         if (ttl <= 0) {
             HttpResponse resp;
             resp.SetError(400, "TTL is required and must be positive");
+            return resp;
+        }
+        if (ttl > 86400 * 365) { // 最大 1 年
+            HttpResponse resp;
+            resp.SetError(400, "TTL too large (max 31536000 seconds)");
             return resp;
         }
         return server_->LeaseGrant(ttl);

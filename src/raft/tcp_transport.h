@@ -57,6 +57,9 @@ public:
     void Start() override;
     void Stop() override;
 
+    // 消息大小限制
+    static constexpr size_t kMaxMessageSize = 4 * 1024 * 1024;  // 4MB
+
     // 消息类型（用于 TCP 头部）
     enum class MsgType : uint8_t {
         RequestVoteReq    = 1,

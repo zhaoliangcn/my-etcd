@@ -59,8 +59,8 @@ public:
     virtual void Stop() = 0;
 };
 
-// 简单的内存传输实现（用于测试和单机模式）
-class InMemoryTransport : public Transport {
+// 回环传输实现（用于测试和单机模式，所有 RPC 直接调用本地 handler）
+class LoopbackTransport : public Transport {
 public:
     RequestVoteResponse SendRequestVote(NodeId target, const RequestVoteRequest& req) override {
         (void)target;
@@ -102,5 +102,8 @@ private:
     RequestVoteHandler request_vote_handler_;
     AppendEntriesHandler append_entries_handler_;
 };
+
+// 向后兼容别名
+using InMemoryTransport = LoopbackTransport;
 
 } // namespace myetcd

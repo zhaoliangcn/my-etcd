@@ -54,13 +54,17 @@ public:
         entries_.insert(entries_.end(), entries.begin(), entries.end());
     }
 
-    // 获取从 start 开始的所有日志
-    std::vector<RaftEntry> EntriesFrom(Index start) const {
+    // 获取从 start 开始的日志（可选限制数量）
+    std::vector<RaftEntry> EntriesFrom(Index start, size_t limit = 0) const {
         std::lock_guard<std::mutex> lock(mu_);
         if (start < first_index_) start = first_index_;
         if (start > LastIndexUnsafe()) return {};
         size_t offset = start - first_index_;
-        return std::vector<RaftEntry>(entries_.begin() + offset, entries_.end());
+        size_t end = entries_.size();
+        if (limit > 0 && offset + limit < end) {
+            end = offset + limit;
+        }
+        return std::vector<RaftEntry>(entries_.begin() + offset, entries_.begin() + end);
     }
 
     // 获取 [start, end) 范围的日志

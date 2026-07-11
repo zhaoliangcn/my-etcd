@@ -188,7 +188,8 @@ void TcpTransport::HandleClient(int client_fd) {
                        (static_cast<uint32_t>(len_buf[2]) << 8) |
                        static_cast<uint32_t>(len_buf[3]);
 
-    if (msg_len > 1024 * 1024) { // 最大 1MB
+    if (msg_len > kMaxMessageSize) { // 消息过大
+        std::cerr << "[TcpTransport] Message too large: " << msg_len << " bytes" << std::endl;
         close(client_fd);
         return;
     }
@@ -392,7 +393,8 @@ std::vector<uint8_t> TcpTransport::SendAndReceive(const std::string& addr,
                         (static_cast<uint32_t>(resp_len_buf[2]) << 8) |
                         static_cast<uint32_t>(resp_len_buf[3]);
 
-    if (resp_len > 1024 * 1024) {
+    if (resp_len > kMaxMessageSize) {
+        std::cerr << "[TcpTransport] Response too large: " << resp_len << " bytes" << std::endl;
         close(fd);
         return {};
     }
