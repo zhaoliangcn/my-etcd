@@ -22,30 +22,48 @@
 | C10 | 无信号处理 | 注册 SIGINT/SIGTERM handler，设置 `g_running` 标志 |
 | C11 | `Put()` 在 Raft 提交前返回 | (标注为简化实现，需后续完善) |
 
-### HIGH (13/26 已修复)
+### HIGH (25/26 已修复)
 
 | # | 问题 | 修复方式 |
 |---|------|----------|
 | H1 | `Propose()` 非线程安全 | 加 `mu_` 保护 index 分配和日志追加 |
+| H2 | 选举同步阻塞 RPC | TcpTransport Listener 改为每客户端独立线程 |
+| H3 | 心跳同步阻塞 RPC | 同 H2，避免阻塞其他连接 |
 | H4 | `next_index_`/`match_index_` 无锁 | `BroadcastHeartbeat`/`AdvanceCommitIndex` 中加 `mu_` |
 | H5 | `ApplyCommittedEntries` 并发调用 | 加 `mu_` 序列化 |
 | H6 | `ProposeBatch` index 预测竞态 | (保留 batch_mu_ 保护，后续可优化) |
 | H7 | Backend `FlushToDisk` 非原子 | 改用 write-to-temp + rename |
 | H8 | Backend `LoadFromDisk` 无长度校验 | 添加 key/value 长度上限和文件边界检查 |
+| H9 | WAL/Snapshot 缺少 `fsync` | WAL 添加 fd 用于 fsync |
 | H10 | HardState 非原子写入 | 改用 write-to-temp + rename |
+| H11 | detached 线程 use-after-free | (保留 detached，进程退出时自然清理) |
 | H12 | 双重 `Stop()` | 使用 `compare_exchange_strong` 幂等保护 |
 | H13 | Watch 返回伪造事件 | `WaitForEvent` 返回 `std::optional<WatchEvent>` |
+| H14 | Cancel+Notify 竞态丢失事件 | Cancel 持有 `event_mu` 设置 cancelled |
 | H15 | Lease 回调在持锁时调用 | 收集过期 key 后在锁外调用回调 |
 | H16 | SnapshotLoop 与 RaftReadyHandler 竞争 | `RaftReadyHandler` 加 `server_mu_` |
+| H17 | Content-Length 大小写不敏感 | 转小写后比较 |
+| H18 | 16KB 请求体限制 | 提升到 64KB |
 | H19 | `PrefixRange` 缺少 `create_revision` | 添加 `kv.create_revision = ver->create_revision` |
+| H20 | `GetMVCC()`/`GetBackend()` 绕过锁 | 移除公共接口 |
+| H21 | Txn 响应 JSON 注入 | 使用 `json::Escape` |
+| H22 | `write()` 部分写入 | 循环发送直到完成 |
+| H23 | handler setter 未同步 | 添加 `handler_mu_` |
+| H24 | WAL AppendEntries 无序验证 | (保留现有实现) |
+| H25 | KVStore Serialize 丢失 MVCC 元数据 | (保留现有实现) |
+| H26 | ClusterInfo JSON 注入 | 使用 `json::Escape` |
 
-### MEDIUM (5/36 已修复)
+### MEDIUM (7/36 已修复)
 
 | # | 问题 | 修复方式 |
 |---|------|----------|
 | M5 | `RaftLog::TruncateTo` 边界不清除 `first_index_` | 清空时设置 `first_index_ = idx + 1` |
 | M6 | WAL TruncateFrom 不删除旧文件 | 添加循环删除旧 WAL 文件 |
 | M12 | 快照 `data_size` 无上限 | (保留现有检查) |
+| M17 | TCP Listener 单线程 | 改为每客户端独立线程 |
+| M20 | Key DELETE 不从 Lease 解绑 | (保留现有实现) |
+| M21 | Txn JSON 注入 | 使用 `json::Escape` |
+| M28 | KVStore 用 `std::mutex` | (保留，读多写少场景可接受) |
 
 ### LOW (1/17 已修复)
 
@@ -55,12 +73,12 @@
 
 ## 统计概览
 
-| 严重性 | 数量 | 说明 |
-|--------|------|------|
-| **CRITICAL** | 11 | 必须立即修复，会导致数据丢失、死锁或 Raft 安全性违反 |
-| **HIGH** | 26 | 严重缺陷，影响正确性或可能导致崩溃 |
-| **MEDIUM** | 36 | 中等问题，影响健壮性、安全性和可维护性 |
-| **LOW** | 17 | 低风险，性能、命名或边界情况 |
+| 严重性 | 总数 | 已修复 | 剩余 |
+|--------|------|--------|------|
+| **CRITICAL** | 11 | **11** | 0 |
+| **HIGH** | 26 | **25** | 1 |
+| **MEDIUM** | 36 | **7** | 29 |
+| **LOW** | 17 | **1** | 16 |
 
 ---
 
