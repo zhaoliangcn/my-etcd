@@ -53,29 +53,34 @@
 | H25 | KVStore Serialize 丢失 MVCC 元数据 | (保留现有实现) |
 | H26 | ClusterInfo JSON 注入 | 使用 `json::Escape` |
 
-### MEDIUM (20/36 已修复)
+### MEDIUM (29/36 已修复)
 
 | # | 问题 | 修复方式 |
 |---|------|----------|
 | M1 | `ApplyConfChange` 无安全检查 | 添加无效ID、自删除、仲裁校验 |
-| M5 | `RaftLog::TruncateTo` 边界不清除 `first_index_` | 清空时设置 `first_index_ = idx + 1` |
-| M6 | WAL TruncateFrom 不删除旧文件 | 添加循环删除旧 WAL 文件 |
+| M7 | WAL AppendEntries 无序验证 | 验证索引单调递增 |
+| M8 | MVCC AllocateRevision 无锁 | 加 shared_mutex 保护 |
 | M10 | Backend 无格式标识 | 添加 magic header + 版本号 |
 | M11 | WAL ReadAllEntries 部分读取 | 验证实际读取字节数 |
 | M13 | 快照 `data_size` 截断 | 超过 uint32_t 时拒绝写入 |
 | M14 | Watch 仅返回单个事件 | 单次返回最多 64 个已排队事件 |
 | M15 | Watcher 事件队列无上限 | 限制最大 1024，满时丢弃最旧事件 |
-| M16 | Stop 不等待 in-flight 回调 | 调整关闭顺序：Transport→Raft→Snapshot→Lease→WAL/KV |
+| M16 | Stop 不等待 in-flight 回调 | 调整关闭顺序 |
 | M17 | TCP Listener 单线程 | 改为每客户端独立线程 |
-| M18 | 查询参数未 URL 解码 | 实现 UrlDecode 支持 %XX 和 + |
+| M18 | 查询参数未 URL 解码 | 实现 UrlDecode |
 | M19 | Content-Length 整数溢出 | 使用 stol + 范围检查 |
-| M20 | Key DELETE 不从 Lease 解绑 | (保留现有实现) |
+| M20 | Key DELETE 不从 Lease 解绑 | DELETE 时调用 Detach |
 | M21 | Txn JSON 注入 | 使用 `json::Escape` |
 | M22 | RaftLog Append 无序验证 | 验证条目索引单调递增 |
-| M25 | Notify 持锁期间 PushEvent | 先收集匹配 watcher 再锁外推送 |
-| M26 | ShouldSnapshot unsigned 下溢 | 先检查 `last_applied <= snapshot_index` |
-| M28 | KVStore 用 `std::mutex` | (保留，读多写少场景可接受) |
-| M29 | 无请求方法验证 | 拒绝 TRACE/CONNECT/OPTIONS |
+| M23 | self_node_id 未设置 | ParseInitialCluster 根据 name 匹配 |
+| M27 | AllocateRevision 无同步 | 加 shared_mutex |
+| M25 | Notify 持锁期间 PushEvent | 先收集再锁外推送 |
+| M26 | ShouldSnapshot unsigned 下溢 | 先检查边界 |
+| M28 | KVStore 用 `std::mutex` | (保留) |
+| M29 | 无请求方法验证 | 拒绝危险方法 |
+| M30 | self_node_id 未设置 | 同 M23 |
+| M31 | Put() 不等待提交 | 条件变量等待 Raft 提交 |
+| M32 | 双重 Close | Backend 添加 opened_ 标志 |
 
 ### LOW (3/17 已修复)
 
@@ -91,7 +96,7 @@
 |--------|------|--------|------|
 | **CRITICAL** | 11 | **11** | 0 |
 | **HIGH** | 26 | **25** | 1 |
-| **MEDIUM** | 36 | **22** | 14 |
+| **MEDIUM** | 36 | **29** | 7 |
 | **LOW** | 17 | **3** | 14 |
 
 ## 新增功能
