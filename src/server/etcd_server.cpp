@@ -109,7 +109,10 @@ bool EtcdServer::Start() {
 }
 
 void EtcdServer::Stop() {
-    running_ = false;
+    bool expected = true;
+    if (!running_.compare_exchange_strong(expected, false)) {
+        return; // 已经停止过
+    }
     if (transport_) transport_->Stop();
     if (snapshot_thread_.joinable()) {
         snapshot_thread_.join();
@@ -122,6 +125,7 @@ void EtcdServer::Stop() {
 }
 
 void EtcdServer::RaftReadyHandler(const std::vector<RaftEntry>& entries) {
+    std::lock_guard<std::mutex> lock(server_mu_);
     ProcessRaftEntries(entries);
 
     // 持久化到 WAL
@@ -425,13 +429,18 @@ HttpResponse EtcdServer::Watch(const std::string& key, Revision start_rev, bool 
         return resp;
     }
 
-    // 等待第一个事件 (简化实现)
+    // 等待第一个事件
     auto event = watcher->WaitForEvent(30000); // 30秒超时
 
     std::ostringstream oss;
     oss << "{";
     oss << "\"watch_id\":" << watch_id << ",";
-    oss << "\"events\":[" << json::WatchEventToJson(event) << "]";
+    if (event) {
+        oss << "\"events\":[" << json::WatchEventToJson(*event) << "]";
+    } else {
+        // 超时或取消，返回空事件列表
+        oss << "\"events\":[]";
+    }
     oss << "}";
     resp.SetJson(oss.str());
     return resp;

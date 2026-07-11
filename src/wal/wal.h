@@ -70,7 +70,10 @@ private:
 
     // 序列化/反序列化
     std::vector<uint8_t> SerializeEntry(const RaftEntry& entry);
-    RaftEntry DeserializeEntry(const uint8_t* data, size_t& offset);
+    RaftEntry DeserializeEntry(const uint8_t* data, size_t size, size_t& offset);
+
+    // 内部无锁版本（调用者必须持有 mu_）
+    std::vector<RaftEntry> ReadAllEntriesUnlocked();
 
     std::string dir_;
     std::fstream wal_file_;

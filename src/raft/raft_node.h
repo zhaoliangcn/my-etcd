@@ -105,6 +105,11 @@ private:
     void AdvanceCommitIndex();
     void ApplyCommittedEntries();
 
+    // 内部版本：调用者必须已持有 mu_
+    void BecomeFollowerLocked(Term term);
+    void BecomeCandidateLocked();
+    void BecomeLeaderLocked();
+
     // 生成随机选举超时
     int64_t RandomElectionTimeout();
 

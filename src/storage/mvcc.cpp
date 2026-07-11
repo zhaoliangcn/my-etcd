@@ -59,11 +59,22 @@ bool KeyIndex::IsDeleted() const {
 }
 
 void KeyIndex::Compact(Revision rev) {
-    auto kept_end = std::remove_if(versions.begin(), versions.end(),
-        [rev](const MvccVersion& v) {
-            return v.revision < rev && !v.tombstone;
-        });
-    versions.erase(kept_end, versions.end());
+    // 保留最后一个 revision <= rev 的版本作为压缩标记，
+    // 以便在 rev 处的查询仍能找到正确的值
+    if (versions.empty()) return;
+
+    // 找到最后一个 revision <= rev 的版本位置
+    size_t keep_until = 0;
+    for (size_t i = 0; i < versions.size(); ++i) {
+        if (versions[i].revision <= rev) {
+            keep_until = i;
+        }
+    }
+
+    // 删除 keep_until 之前的所有版本（保留 keep_until 处的版本）
+    if (keep_until > 0) {
+        versions.erase(versions.begin(), versions.begin() + keep_until);
+    }
 }
 
 // MVCC 实现
@@ -202,6 +213,7 @@ std::vector<KeyValue> MVCC::PrefixRange(const std::string& prefix,
         KeyValue kv;
         kv.key = it->first;
         kv.value = ver->value;
+        kv.create_revision = ver->create_revision;
         kv.mod_revision = ver->revision;
         kv.version = ver->version;
         kv.lease_id = ver->lease_id;

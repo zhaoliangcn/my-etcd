@@ -36,19 +36,24 @@ LeaseId LeaseManager::Grant(int64_t ttl_ms) {
 }
 
 bool LeaseManager::Revoke(LeaseId id) {
-    std::lock_guard<std::mutex> lock(mu_);
+    // 先在锁内收集需要通知的 key，再在锁外调用回调
+    std::vector<std::string> keys_to_notify;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        auto it = leases_.find(id);
+        if (it == leases_.end()) return false;
 
-    auto it = leases_.find(id);
-    if (it == leases_.end()) return false;
-
-    // 通知所有关联的 key 过期
-    if (expire_callback_) {
         for (const auto& key : it->second.attached_keys) {
+            keys_to_notify.push_back(key);
+        }
+        leases_.erase(it);
+    }
+
+    if (expire_callback_) {
+        for (const auto& key : keys_to_notify) {
             expire_callback_(key);
         }
     }
-
-    leases_.erase(it);
     return true;
 }
 
@@ -124,22 +129,28 @@ void LeaseManager::CheckExpiry() {
     while (running_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(check_interval_ms_));
 
-        // 在一次加锁中完成检查、回调和删除，消除 TOCTOU 竞态
-        std::lock_guard<std::mutex> lock(mu_);
-        auto now = std::chrono::steady_clock::now();
-        auto it = leases_.begin();
-        while (it != leases_.end()) {
-            if (now >= it->second.expiry) {
-                // 先触发过期回调
-                if (expire_callback_) {
+        // 收集过期的 key，然后在锁外调用回调
+        std::vector<std::string> expired_keys;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            auto now = std::chrono::steady_clock::now();
+            auto it = leases_.begin();
+            while (it != leases_.end()) {
+                if (now >= it->second.expiry) {
                     for (const auto& key : it->second.attached_keys) {
-                        expire_callback_(key);
+                        expired_keys.push_back(key);
                     }
+                    it = leases_.erase(it);
+                } else {
+                    ++it;
                 }
-                // 再删除租约
-                it = leases_.erase(it);
-            } else {
-                ++it;
+            }
+        }
+
+        // 在锁外调用回调，避免死锁
+        if (expire_callback_) {
+            for (const auto& key : expired_keys) {
+                expire_callback_(key);
             }
         }
     }

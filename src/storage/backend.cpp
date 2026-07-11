@@ -33,22 +33,40 @@ bool Backend::LoadFromDisk() {
     std::ifstream ifs(DataFilePath(), std::ios::binary);
     if (!ifs) return true; // 文件不存在，首次启动
 
-    while (ifs.good()) {
+    // 获取文件大小
+    ifs.seekg(0, std::ios::end);
+    size_t file_size = ifs.tellg();
+    ifs.seekg(0, std::ios::beg);
+
+    constexpr size_t kMaxKeyLen = 1024 * 1024;    // 1MB
+    constexpr size_t kMaxValueLen = 64 * 1024 * 1024; // 64MB
+
+    size_t bytes_read = 0;
+    while (bytes_read + 4 <= file_size) {
         uint32_t key_len = 0;
         ifs.read(reinterpret_cast<char*>(&key_len), sizeof(uint32_t));
-        if (!ifs.good() || key_len == 0) break;
+        if (!ifs.gcount()) break;
+        bytes_read += ifs.gcount();
+
+        if (key_len == 0 || key_len > kMaxKeyLen || bytes_read + key_len > file_size) break;
 
         std::string key(key_len, '\0');
         ifs.read(&key[0], key_len);
-        if (!ifs.good()) break;
+        if (static_cast<size_t>(ifs.gcount()) != key_len) break;
+        bytes_read += key_len;
 
+        if (bytes_read + 4 > file_size) break;
         uint32_t value_len = 0;
         ifs.read(reinterpret_cast<char*>(&value_len), sizeof(uint32_t));
-        if (!ifs.good()) break;
+        if (!ifs.gcount()) break;
+        bytes_read += ifs.gcount();
+
+        if (value_len > kMaxValueLen || bytes_read + value_len > file_size) break;
 
         std::string value(value_len, '\0');
         ifs.read(&value[0], value_len);
-        if (!ifs.good()) break;
+        if (static_cast<size_t>(ifs.gcount()) != value_len) break;
+        bytes_read += value_len;
 
         store_[key] = value;
     }
@@ -57,7 +75,11 @@ bool Backend::LoadFromDisk() {
 }
 
 bool Backend::FlushToDisk() {
-    std::ofstream ofs(DataFilePath(), std::ios::binary | std::ios::trunc);
+    std::string path = DataFilePath();
+    std::string tmp_path = path + ".tmp";
+
+    // 写临时文件，确保数据完整后再原子重命名
+    std::ofstream ofs(tmp_path, std::ios::binary | std::ios::trunc);
     if (!ofs) return false;
 
     for (const auto& [key, value] : store_) {
@@ -71,7 +93,21 @@ bool Backend::FlushToDisk() {
     }
 
     ofs.flush();
-    return ofs.good();
+    if (!ofs) {
+        std::error_code ec;
+        fs::remove(tmp_path, ec);
+        return false;
+    }
+    ofs.close();
+
+    std::error_code ec;
+    fs::rename(tmp_path, path, ec);
+    if (ec) {
+        std::error_code ec2;
+        fs::remove(tmp_path, ec2);
+        return false;
+    }
+    return true;
 }
 
 bool Backend::Put(const std::string& key, const std::string& value) {

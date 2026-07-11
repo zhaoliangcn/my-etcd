@@ -11,10 +11,9 @@ RaftNode::RaftNode(const ClusterConfig& config)
     , node_id_(config.node_id)
     , rng_(std::chrono::steady_clock::now().time_since_epoch().count())
 {
-    for (const auto& peer : config.initial_cluster) {
-        (void)peer;
-        // 解析 "name=addr" 格式，简化处理
-        NodeId id = peers_.size() + 1;
+    // 从 initial_cluster 解析 peer：格式 "name=addr,name=addr,..."
+    // peer_addresses 已由 main.cpp 解析好，直接用 node_id 作为 key
+    for (const auto& [id, addr] : config.peer_addresses) {
         if (id != node_id_) {
             peers_.insert(id);
         }
@@ -50,8 +49,8 @@ void RaftNode::Run() {
                 return !running_;
             });
             if (!running_) break;
-            // 选举超时，转为 Candidate
-            BecomeCandidate();
+            // 选举超时，转为 Candidate（mu_ 已持有）
+            BecomeCandidateLocked();
             break;
         }
         case NodeState::Candidate: {
@@ -78,6 +77,22 @@ void RaftNode::Run() {
 }
 
 void RaftNode::BecomeFollower(Term term) {
+    std::lock_guard<std::mutex> lock(mu_);
+    BecomeFollowerLocked(term);
+}
+
+void RaftNode::BecomeCandidate() {
+    std::lock_guard<std::mutex> lock(mu_);
+    BecomeCandidateLocked();
+}
+
+void RaftNode::BecomeLeader() {
+    std::lock_guard<std::mutex> lock(mu_);
+    BecomeLeaderLocked();
+}
+
+void RaftNode::BecomeFollowerLocked(Term term) {
+    // 调用者必须已持有 mu_
     if (term > current_term_.load()) {
         current_term_ = term;
         voted_for_ = kNoNodeId;
@@ -88,9 +103,10 @@ void RaftNode::BecomeFollower(Term term) {
     }
 }
 
-void RaftNode::BecomeCandidate() {
+void RaftNode::BecomeCandidateLocked() {
+    // 调用者必须已持有 mu_
     state_ = NodeState::Candidate;
-    current_term_ = current_term_.load() + 1;
+    current_term_ = current_term_.fetch_add(1) + 1;
     voted_for_ = node_id_;
     leader_id_ = kNoNodeId;
     if (state_change_handler_) {
@@ -98,10 +114,11 @@ void RaftNode::BecomeCandidate() {
     }
 }
 
-void RaftNode::BecomeLeader() {
+void RaftNode::BecomeLeaderLocked() {
+    // 调用者必须已持有 mu_
     state_ = NodeState::Leader;
     leader_id_ = node_id_;
-    
+
     // 初始化 next_index 和 match_index
     Index last_idx = log_.LastIndex();
     next_index_.clear();
@@ -110,7 +127,7 @@ void RaftNode::BecomeLeader() {
         next_index_[peer] = last_idx + 1;
         match_index_[peer] = 0;
     }
-    
+
     if (state_change_handler_) {
         state_change_handler_(NodeState::Leader);
     }
@@ -165,10 +182,14 @@ void RaftNode::BroadcastHeartbeat() {
     auto current_commit = commit_index_.load();
 
     for (auto peer : peers_) {
-        Index prev_log_index = next_index_[peer] - 1;
+        Index prev_log_index;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            prev_log_index = next_index_[peer] - 1;
+        }
         Term prev_log_term = log_.TermAt(prev_log_index);
 
-        auto entries = log_.EntriesFrom(next_index_[peer]);
+        auto entries = log_.EntriesFrom(prev_log_index + 1);
 
         // 限制单次发送条目数（流水线控制）
         const size_t max_entries_per_msg = 128;
@@ -194,41 +215,44 @@ void RaftNode::BroadcastHeartbeat() {
             return;
         }
 
-        if (resp.success) {
-            // 更新 match_index 和 next_index
-            if (!entries.empty()) {
-                match_index_[peer] = entries.back().index;
-                next_index_[peer] = match_index_[peer] + 1;
-            } else {
-                // 心跳：至少更新到 follower 报告的 last_log_index
-                match_index_[peer] = std::max(match_index_[peer], resp.last_log_index);
-            }
-        } else {
-            // ----- 优化：二分查找回退 -----
-            if (resp.conflict_term > 0) {
-                // 找到 Leader 日志中冲突 term 的第一条索引
-                Index new_next = FindConflictTermIndex(resp.conflict_term, resp.conflict_index);
-                if (new_next > 0 && new_next < next_index_[peer]) {
-                    next_index_[peer] = new_next;
+        {
+            std::lock_guard<std::mutex> lock(mu_);
+            if (resp.success) {
+                // 更新 match_index 和 next_index
+                if (!entries.empty()) {
+                    match_index_[peer] = entries.back().index;
+                    next_index_[peer] = match_index_[peer] + 1;
                 } else {
-                    // 如果没找到，回退到冲突索引
-                    if (resp.conflict_index > 0 && resp.conflict_index < next_index_[peer]) {
+                    // 心跳：至少更新到 follower 报告的 last_log_index
+                    match_index_[peer] = std::max(match_index_[peer], resp.last_log_index);
+                }
+            } else {
+                // ----- 优化：二分查找回退 -----
+                if (resp.conflict_term > 0) {
+                    // 找到 Leader 日志中冲突 term 的第一条索引
+                    Index new_next = FindConflictTermIndex(resp.conflict_term, resp.conflict_index);
+                    if (new_next > 0 && new_next < next_index_[peer]) {
+                        next_index_[peer] = new_next;
+                    } else {
+                        // 如果没找到，回退到冲突索引
+                        if (resp.conflict_index > 0 && resp.conflict_index < next_index_[peer]) {
+                            next_index_[peer] = resp.conflict_index;
+                        } else if (next_index_[peer] > 1) {
+                            next_index_[peer]--;
+                        }
+                    }
+                } else if (resp.conflict_index > 0) {
+                    // Follower 没有冲突 term 信息，使用 conflict_index
+                    if (resp.conflict_index < next_index_[peer]) {
                         next_index_[peer] = resp.conflict_index;
                     } else if (next_index_[peer] > 1) {
                         next_index_[peer]--;
                     }
-                }
-            } else if (resp.conflict_index > 0) {
-                // Follower 没有冲突 term 信息，使用 conflict_index
-                if (resp.conflict_index < next_index_[peer]) {
-                    next_index_[peer] = resp.conflict_index;
-                } else if (next_index_[peer] > 1) {
-                    next_index_[peer]--;
-                }
-            } else {
-                // 回退
-                if (next_index_[peer] > 1) {
-                    next_index_[peer]--;
+                } else {
+                    // 回退
+                    if (next_index_[peer] > 1) {
+                        next_index_[peer]--;
+                    }
                 }
             }
         }
@@ -237,16 +261,17 @@ void RaftNode::BroadcastHeartbeat() {
 
 void RaftNode::AdvanceCommitIndex() {
     if (state_ != NodeState::Leader) return;
-    
+
+    std::lock_guard<std::mutex> lock(mu_);
     std::vector<Index> match_indices;
     match_indices.push_back(log_.LastIndex()); // 自己的
-    
+
     for (auto& [peer, idx] : match_index_) {
         match_indices.push_back(idx);
     }
-    
+
     std::sort(match_indices.begin(), match_indices.end(), std::greater<Index>());
-    
+
     int majority = static_cast<int>(peers_.size() + 1) / 2 + 1;
     if (majority <= static_cast<int>(match_indices.size())) {
         Index new_commit = match_indices[majority - 1];
@@ -259,26 +284,27 @@ void RaftNode::AdvanceCommitIndex() {
 }
 
 void RaftNode::ApplyCommittedEntries() {
+    std::lock_guard<std::mutex> lock(mu_);
     Index committed = commit_index_.load();
     Index applied = last_applied_.load();
-    
+
     if (committed > applied) {
         auto entries = log_.Slice(applied + 1, committed + 1);
-        
+
         // 处理 CONF_CHANGE 条目：在转发给 EtcdServer 之前先执行节点变更
         for (const auto& e : entries) {
             if (e.type == EventType::CONF_CHANGE) {
                 ApplyConfChange(e.conf_change);
             }
         }
-        
+
         {
-            std::lock_guard<std::mutex> lock(pending_mu_);
+            std::lock_guard<std::mutex> plock(pending_mu_);
             pending_committed_.insert(pending_committed_.end(), entries.begin(), entries.end());
         }
-        
+
         last_applied_ = committed;
-        
+
         if (ready_handler_ && !entries.empty()) {
             ready_handler_(entries);
         }
@@ -294,16 +320,17 @@ ProposalResult RaftNode::Propose(const RaftEntry& entry) {
         result.error = oss.str();
         return result;
     }
-    
+
+    std::lock_guard<std::mutex> lock(mu_);
     RaftEntry e = entry;
     e.term = current_term_.load();
     e.index = log_.LastIndex() + 1;
-    
+
     log_.Append(e);
-    
+
     // 更新自己的 match_index
     match_index_[node_id_] = e.index;
-    
+
     ProposalResult result;
     result.index = e.index;
     result.accepted = true;
@@ -363,6 +390,7 @@ ProposalResult RaftNode::ProposeConfChange(const ConfChange& cc) {
         return result;
     }
 
+    std::lock_guard<std::mutex> lock(mu_);
     RaftEntry e;
     e.term = current_term_.load();
     e.index = log_.LastIndex() + 1;
@@ -462,31 +490,34 @@ RequestVoteResponse RaftNode::HandleRequestVote(const RequestVoteRequest& req) {
     RequestVoteResponse resp;
     resp.term = current_term_.load();
     resp.vote_granted = false;
-    
+
     if (req.term < current_term_.load()) {
         return resp;
     }
-    
+
     if (req.term > current_term_.load()) {
         BecomeFollower(req.term);
         resp.term = req.term;
     }
-    
-    // 检查是否已投票
-    if (voted_for_.load() == kNoNodeId || voted_for_.load() == req.candidate_id) {
-        // 检查日志是否至少和当前一样新
-        Term last_log_term = log_.LastTerm();
-        Index last_log_index = log_.LastIndex();
-        
-        bool log_ok = (req.last_log_term > last_log_term) ||
-                      (req.last_log_term == last_log_term && req.last_log_index >= last_log_index);
-        
-        if (log_ok) {
-            voted_for_ = req.candidate_id;
-            resp.vote_granted = true;
+
+    // 检查是否已投票（加锁保护 voted_for_ 的读-检查-写）
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        if (voted_for_.load() == kNoNodeId || voted_for_.load() == req.candidate_id) {
+            // 检查日志是否至少和当前一样新
+            Term last_log_term = log_.LastTerm();
+            Index last_log_index = log_.LastIndex();
+
+            bool log_ok = (req.last_log_term > last_log_term) ||
+                          (req.last_log_term == last_log_term && req.last_log_index >= last_log_index);
+
+            if (log_ok) {
+                voted_for_ = req.candidate_id;
+                resp.vote_granted = true;
+            }
         }
     }
-    
+
     return resp;
 }
 
@@ -535,14 +566,11 @@ AppendEntriesResponse RaftNode::HandleAppendEntries(const AppendEntriesRequest& 
         }
     }
     
-    // 处理冲突：删除冲突的日志
+    // 处理冲突：删除冲突的日志，批量追加确保原子性
     if (!req.entries.empty()) {
         Index first_new_idx = req.entries[0].index;
         log_.TruncateTo(first_new_idx - 1);
-        
-        for (const auto& entry : req.entries) {
-            log_.Append(entry);
-        }
+        log_.Append(req.entries);
     }
     
     // 更新 commit_index

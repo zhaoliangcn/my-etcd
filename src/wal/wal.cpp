@@ -73,7 +73,10 @@ void WAL::Close() {
 bool WAL::SaveHardState(const RaftHardState& state) {
     std::lock_guard<std::mutex> lock(mu_);
     std::string path = DataDir() + "/hardstate";
-    std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
+    std::string tmp_path = path + ".tmp";
+
+    // 写临时文件，再原子重命名
+    std::ofstream ofs(tmp_path, std::ios::binary | std::ios::trunc);
     if (!ofs) return false;
 
     ofs.write(reinterpret_cast<const char*>(&state.current_term), sizeof(Term));
@@ -81,7 +84,22 @@ bool WAL::SaveHardState(const RaftHardState& state) {
     ofs.write(reinterpret_cast<const char*>(&voted), sizeof(NodeId));
     ofs.write(reinterpret_cast<const char*>(&state.commit_index), sizeof(Index));
 
-    return ofs.good();
+    ofs.flush();
+    if (!ofs) {
+        std::error_code ec;
+        fs::remove(tmp_path, ec);
+        return false;
+    }
+    ofs.close();
+
+    std::error_code ec;
+    fs::rename(tmp_path, path, ec);
+    if (ec) {
+        std::error_code ec2;
+        fs::remove(tmp_path, ec2);
+        return false;
+    }
+    return true;
 }
 
 bool WAL::LoadHardState(RaftHardState& state) {
@@ -156,8 +174,12 @@ std::vector<uint8_t> WAL::SerializeEntry(const RaftEntry& entry) {
     return data;
 }
 
-RaftEntry WAL::DeserializeEntry(const uint8_t* data, size_t& offset) {
+RaftEntry WAL::DeserializeEntry(const uint8_t* data, size_t size, size_t& offset) {
     RaftEntry entry;
+
+    auto check_bounds = [&](size_t n) -> bool {
+        return offset + n <= size;
+    };
 
     auto read_u64 = [&]() -> uint64_t {
         uint64_t v = 0;
@@ -187,28 +209,34 @@ RaftEntry WAL::DeserializeEntry(const uint8_t* data, size_t& offset) {
 
     auto read_str = [&]() -> std::string {
         uint32_t len = read_u32();
+        if (!check_bounds(len)) { offset = size; return ""; }
         std::string s(reinterpret_cast<const char*>(data + offset), len);
         offset += len;
         return s;
     };
 
     // 跳过长度前缀
+    if (!check_bounds(4)) return entry;
     read_u32();
 
+    if (!check_bounds(1)) return entry;
     uint8_t type = read_u8();
     if (static_cast<WalRecordType>(type) != WalRecordType::Entry) {
         return entry;
     }
 
+    if (!check_bounds(8 + 8 + 1)) return entry;
     entry.term = read_u64();
     entry.index = read_u64();
     entry.type = static_cast<EventType>(read_u8());
     entry.key = read_str();
     entry.value = read_str();
+    if (!check_bounds(8)) return entry;
     entry.lease_id = static_cast<LeaseId>(read_u64());
 
     // 读取 ConfChange 数据（仅 CONF_CHANGE 类型）
     if (entry.type == EventType::CONF_CHANGE) {
+        if (!check_bounds(1 + 8)) return entry;
         entry.conf_change.type = static_cast<ConfChangeType>(read_u8());
         entry.conf_change.node_id = read_u64();
         entry.conf_change.peer_addr = read_str();
@@ -233,6 +261,11 @@ bool WAL::AppendEntries(const std::vector<RaftEntry>& entries) {
 
 std::vector<RaftEntry> WAL::ReadAllEntries() {
     std::lock_guard<std::mutex> lock(mu_);
+    return ReadAllEntriesUnlocked();
+}
+
+std::vector<RaftEntry> WAL::ReadAllEntriesUnlocked() {
+    // 调用者必须已持有 mu_
     std::vector<RaftEntry> entries;
 
     // 读取所有 WAL 文件
@@ -260,7 +293,7 @@ std::vector<RaftEntry> WAL::ReadAllEntries() {
             if (len == 0 || offset + 4 + len > file_size) break;
 
             size_t entry_offset = offset;
-            RaftEntry entry = DeserializeEntry(buffer.data(), entry_offset);
+            RaftEntry entry = DeserializeEntry(buffer.data(), file_size, entry_offset);
             if (entry.index > 0) {
                 entries.push_back(entry);
                 last_index_ = std::max(last_index_, entry.index);
@@ -338,12 +371,18 @@ bool WAL::TruncateFrom(Index idx) {
     // 简化的截断实现：重建 WAL 文件
     wal_file_.close();
 
-    auto entries = ReadAllEntries();
+    auto entries = ReadAllEntriesUnlocked();
     std::vector<RaftEntry> kept;
     for (auto& e : entries) {
         if (e.index >= idx) {
             kept.push_back(e);
         }
+    }
+
+    // 删除旧 WAL 文件
+    for (int seq = 0; seq < wal_seq_; ++seq) {
+        std::error_code ec;
+        fs::remove(WalFilePath(seq), ec);
     }
 
     // 写入新文件

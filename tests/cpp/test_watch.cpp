@@ -161,11 +161,9 @@ static bool test_watch_wait_timeout() {
     w.id = 1;
     w.key = "key";
 
-    // WaitForEvent 超时应该返回一个事件（cancelled 事件）
+    // WaitForEvent 超时应该返回 nullopt
     auto ev = w.WaitForEvent(1);  // 1ms 超时
-    // 超时后返回的 events 可能为空或者特定事件
-    TEST_ASSERT(ev.type == EventType::PUT || ev.type == EventType::DELETE,
-                "timeout event type should be valid");
+    TEST_ASSERT(!ev.has_value(), "timeout should return nullopt");
     return true;
 }
 

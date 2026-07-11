@@ -1,9 +1,10 @@
 #include "watch/watcher.h"
 #include <chrono>
+#include <optional>
 
 namespace myetcd {
 
-WatchEvent Watcher::WaitForEvent(int64_t timeout_ms) {
+std::optional<WatchEvent> Watcher::WaitForEvent(int64_t timeout_ms) {
     std::unique_lock<std::mutex> lock(event_mu);
 
     if (timeout_ms < 0) {
@@ -14,12 +15,7 @@ WatchEvent Watcher::WaitForEvent(int64_t timeout_ms) {
     }
 
     if (events.empty()) {
-        // 超时或 cancelled 但无事件，返回空事件
-        WatchEvent ev;
-        ev.type = EventType::PUT;
-        ev.kv.key = "";
-        ev.kv.value = "";
-        return ev;
+        return std::nullopt;
     }
 
     WatchEvent ev = events.front();

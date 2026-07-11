@@ -27,8 +27,8 @@ struct Watcher {
     std::condition_variable event_cv;
     bool cancelled = false;
 
-    // 等待事件
-    WatchEvent WaitForEvent(int64_t timeout_ms = -1);
+    // 等待事件，返回 nullopt 表示超时或取消
+    std::optional<WatchEvent> WaitForEvent(int64_t timeout_ms = -1);
 
     // 推送事件
     void PushEvent(const WatchEvent& event);

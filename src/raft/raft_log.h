@@ -87,6 +87,7 @@ public:
         std::lock_guard<std::mutex> lock(mu_);
         if (idx < first_index_) {
             entries_.clear();
+            first_index_ = idx + 1;
             return;
         }
         size_t keep = idx - first_index_ + 1;

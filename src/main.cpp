@@ -10,6 +10,8 @@
 #include <cstring>
 #include <algorithm>
 #include <cstdint>
+#include <atomic>
+#include <csignal>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -190,7 +192,15 @@ private:
         HttpResponse resp = HandleRequest(req);
 
         std::string response_str = BuildResponse(resp);
-        send(client, response_str.c_str(), static_cast<int>(response_str.size()), 0);
+        // 处理部分写入
+        const char* ptr = response_str.c_str();
+        size_t remaining = response_str.size();
+        while (remaining > 0) {
+            ssize_t n = send(client, ptr, remaining, 0);
+            if (n <= 0) break;
+            ptr += n;
+            remaining -= n;
+        }
     }
 
     HttpRequest ParseRequest(const std::string& raw) {
@@ -537,6 +547,13 @@ private:
 
 } // namespace myetcd
 
+// 全局信号标志
+static std::atomic<bool> g_running{true};
+
+void SignalHandler(int /*sig*/) {
+    g_running = false;
+}
+
 // 打印帮助信息
 void PrintUsage(const char* prog) {
     std::cout << "Usage: " << prog << " [options]\n"
@@ -629,11 +646,16 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Press Ctrl+C to stop..." << std::endl;
 
+    // 注册信号处理
+    std::signal(SIGINT, SignalHandler);
+    std::signal(SIGTERM, SignalHandler);
+
     // 主循环等待信号
-    while (server.IsRunning()) {
+    while (g_running) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
+    std::cout << "\n[Main] Shutting down..." << std::endl;
     http_server.Stop();
     server.Stop();
 
