@@ -429,16 +429,29 @@ HttpResponse EtcdServer::Watch(const std::string& key, Revision start_rev, bool 
         return resp;
     }
 
-    // 等待第一个事件
-    auto event = watcher->WaitForEvent(30000); // 30秒超时
+    // 等待第一个事件（阻塞最多 30 秒）
+    auto first_event = watcher->WaitForEvent(30000);
 
     std::ostringstream oss;
     oss << "{";
     oss << "\"watch_id\":" << watch_id << ",";
-    if (event) {
-        oss << "\"events\":[" << json::WatchEventToJson(*event) << "]";
+
+    if (first_event) {
+        // 收集所有已排队的事件（非阻塞）
+        std::vector<WatchEvent> events;
+        events.push_back(*first_event);
+        while (auto ev = watcher->WaitForEvent(0)) {
+            events.push_back(*ev);
+            if (events.size() >= 64) break; // 单次最多返回 64 个事件
+        }
+
+        oss << "\"events\":[";
+        for (size_t i = 0; i < events.size(); ++i) {
+            if (i > 0) oss << ",";
+            oss << json::WatchEventToJson(events[i]);
+        }
+        oss << "]";
     } else {
-        // 超时或取消，返回空事件列表
         oss << "\"events\":[]";
     }
     oss << "}";

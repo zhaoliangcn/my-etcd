@@ -407,6 +407,12 @@ ProposalResult RaftNode::ProposeConfChange(const ConfChange& cc) {
 }
 
 void RaftNode::ApplyConfChange(const ConfChange& cc) {
+    // 安全检查
+    if (cc.node_id == kNoNodeId) {
+        std::cerr << "[Raft] ConfChange rejected: invalid node_id" << std::endl;
+        return;
+    }
+
     if (cc.type == ConfChangeType::AddNode) {
         if (peers_.count(cc.node_id) == 0) {
             peers_.insert(cc.node_id);
@@ -422,6 +428,23 @@ void RaftNode::ApplyConfChange(const ConfChange& cc) {
                       << cc.peer_addr << std::endl;
         }
     } else if (cc.type == ConfChangeType::RemoveNode) {
+        // 检查：不能移除自己（Leader 应先转移领导权）
+        if (cc.node_id == node_id_) {
+            std::cerr << "[Raft] Cannot remove self from cluster" << std::endl;
+            return;
+        }
+        // 检查：移除后是否仍有多数派
+        if (peers_.count(cc.node_id) > 0) {
+            size_t remaining = peers_.size() - 1; // 移除后节点数（不含自己）
+            size_t total = remaining + 1;          // 包括自己
+            size_t majority = total / 2 + 1;
+            if (remaining + 1 < majority) {
+                std::cerr << "[Raft] Cannot remove node " << cc.node_id
+                          << ": would lose quorum" << std::endl;
+                return;
+            }
+        }
+
         peers_.erase(cc.node_id);
         next_index_.erase(cc.node_id);
         match_index_.erase(cc.node_id);
@@ -585,6 +608,12 @@ AppendEntriesResponse RaftNode::HandleAppendEntries(const AppendEntriesRequest& 
 }
 
 void RaftNode::ApplySnapshot(const Snapshot& snapshot) {
+    // 安全校验：快照不应使状态倒退
+    if (snapshot.last_index < commit_index_.load()) {
+        std::cerr << "[Raft] Ignoring stale snapshot: snapshot index " << snapshot.last_index
+                  << " < commit index " << commit_index_.load() << std::endl;
+        return;
+    }
     log_.Restore(snapshot.last_index);
     commit_index_ = snapshot.last_index;
     last_applied_ = snapshot.last_index;

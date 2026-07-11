@@ -26,6 +26,10 @@ std::optional<WatchEvent> Watcher::WaitForEvent(int64_t timeout_ms) {
 void Watcher::PushEvent(const WatchEvent& event) {
     {
         std::lock_guard<std::mutex> lock(event_mu);
+        // 队列满时丢弃最旧事件，防止 OOM
+        while (events.size() >= kMaxEventQueueSize) {
+            events.pop();
+        }
         events.push(event);
     }
     event_cv.notify_one();

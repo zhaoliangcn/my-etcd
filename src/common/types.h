@@ -91,7 +91,7 @@ struct KeyValue {
 
 // Watch 事件
 struct WatchEvent {
-    EventType type;
+    EventType type = EventType::PUT;
     KeyValue kv;
     KeyValue prev_kv;
 };

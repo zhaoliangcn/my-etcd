@@ -18,10 +18,12 @@ struct Watcher {
         Prefix,
     };
 
-    int64_t id;
+    static constexpr size_t kMaxEventQueueSize = 1024;
+
+    int64_t id = 0;
     std::string key;
-    WatchType type;
-    Revision start_rev;
+    WatchType type = WatchType::Key;
+    Revision start_rev = 0;
     std::queue<WatchEvent> events;
     std::mutex event_mu;
     std::condition_variable event_cv;
@@ -30,7 +32,7 @@ struct Watcher {
     // 等待事件，返回 nullopt 表示超时或取消
     std::optional<WatchEvent> WaitForEvent(int64_t timeout_ms = -1);
 
-    // 推送事件
+    // 推送事件，队列满时丢弃最旧的事件
     void PushEvent(const WatchEvent& event);
 };
 

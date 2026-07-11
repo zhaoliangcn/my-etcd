@@ -42,9 +42,15 @@ public:
         return entry.index;
     }
 
-    // 追加多条日志
+    // 追加多条日志（验证单调递增索引）
     void Append(const std::vector<RaftEntry>& entries) {
         std::lock_guard<std::mutex> lock(mu_);
+        if (entries.empty()) return;
+        // 验证第一条日志的索引紧跟最后一条已有日志
+        Index expected = entries_.empty() ? first_index_ : entries_.back().index + 1;
+        if (entries.front().index != expected) {
+            return; // 索引不连续，拒绝追加
+        }
         entries_.insert(entries_.end(), entries.begin(), entries.end());
     }
 
