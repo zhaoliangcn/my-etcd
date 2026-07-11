@@ -322,6 +322,12 @@ bool WAL::AppendEntries(const std::vector<RaftEntry>& entries) {
     if (!wal_file_.is_open()) return false;
 
     for (const auto& entry : entries) {
+        // 验证索引单调递增
+        if (entry.index <= last_index_ && last_index_ > 0) {
+            std::cerr << "[WAL] Non-monotonic index: " << entry.index
+                      << " <= " << last_index_ << ", skipping" << std::endl;
+            continue;
+        }
         auto data = SerializeEntry(entry);
         wal_file_.write(reinterpret_cast<const char*>(data.data()), data.size());
         last_index_ = entry.index;

@@ -61,6 +61,7 @@ private:
     std::string data_dir_;
     std::map<std::string, std::string> store_;
     mutable std::mutex mu_;
+    bool opened_ = false;
 };
 
 } // namespace myetcd

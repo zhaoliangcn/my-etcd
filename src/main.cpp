@@ -652,9 +652,10 @@ void PrintUsage(const char* prog) {
 }
 
 // 解析 --initial-cluster 参数，格式: "node1=127.0.0.1:2380,node2=127.0.0.2:2380,..."
-// 返回解析后的初始集群列表，并填充 peer_addresses 映射
+// 返回解析后的初始集群列表，填充 peer_addresses 映射，并设置 self_node_id
 std::vector<std::string> ParseInitialCluster(const std::string& cluster_str,
-                                             myetcd::NodeId& /*self_node_id*/,
+                                             const std::string& self_name,
+                                             myetcd::NodeId& self_node_id,
                                              std::map<myetcd::NodeId, std::string>& peer_addresses) {
     std::vector<std::string> result;
     std::istringstream iss(cluster_str);
@@ -665,9 +666,15 @@ std::vector<std::string> ParseInitialCluster(const std::string& cluster_str,
         size_t eq = part.find('=');
         if (eq == std::string::npos) continue;
 
+        std::string name = part.substr(0, eq);
         std::string addr = part.substr(eq + 1);
         result.push_back(part);
         peer_addresses[id_counter] = addr;
+
+        // 如果名字匹配自己，设置 self_node_id
+        if (name == self_name) {
+            self_node_id = id_counter;
+        }
         ++id_counter;
     }
 
@@ -691,7 +698,7 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--listen-peer-addr" && i + 1 < argc) {
             config.listen_peer_addr = argv[++i];
         } else if (arg == "--initial-cluster" && i + 1 < argc) {
-            config.initial_cluster = ParseInitialCluster(argv[++i], config.node_id, config.peer_addresses);
+            config.initial_cluster = ParseInitialCluster(argv[++i], config.name, config.node_id, config.peer_addresses);
         } else if (arg == "--auth-token" && i + 1 < argc) {
             config.auth_token = argv[++i];
         } else if (arg == "--help") {

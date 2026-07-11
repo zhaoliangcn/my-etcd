@@ -140,6 +140,15 @@ void EtcdServer::RaftReadyHandler(const std::vector<RaftEntry>& entries) {
     state.current_term = raft_node_->CurrentTerm();
     state.commit_index = raft_node_->GetLog().LastIndex();
     wal_->SaveHardState(state);
+
+    // 通知等待提交的请求
+    {
+        std::lock_guard<std::mutex> clock(commit_mu_);
+        for (const auto& entry : entries) {
+            pending_commits_[entry.index] = true;
+        }
+    }
+    commit_cv_.notify_all();
 }
 
 void EtcdServer::ProcessRaftEntries(const std::vector<RaftEntry>& entries) {
@@ -174,6 +183,11 @@ void EtcdServer::ProcessRaftEntries(const std::vector<RaftEntry>& entries) {
                 } else {
                     prev_kv.key = entry.key;
                 }
+            }
+
+            // 从租约中解绑 key
+            if (prev_kv.lease_id > 0 && lease_mgr_) {
+                lease_mgr_->Detach(prev_kv.lease_id, entry.key);
             }
 
             kvstore_->Delete(entry.key);
@@ -243,7 +257,15 @@ HttpResponse EtcdServer::Put(const std::string& key, const std::string& value, L
         return resp;
     }
 
-    // 等待提交 (简化实现：直接返回)
+    // 等待 Raft 提交（最多 5 秒）
+    {
+        std::unique_lock<std::mutex> lock(commit_mu_);
+        commit_cv_.wait_for(lock, std::chrono::seconds(5), [this, idx = result.index] {
+            return pending_commits_.count(idx) > 0 || !running_.load();
+        });
+        pending_commits_.erase(result.index);
+    }
+
     std::ostringstream oss;
     oss << "{\"header\":{\"revision\":" << result.index << "},\"succeeded\":true}";
     resp.SetJson(oss.str());
@@ -266,6 +288,15 @@ HttpResponse EtcdServer::Delete(const std::string& key) {
     if (!result.accepted) {
         resp.SetError(500, result.error);
         return resp;
+    }
+
+    // 等待 Raft 提交
+    {
+        std::unique_lock<std::mutex> lock(commit_mu_);
+        commit_cv_.wait_for(lock, std::chrono::seconds(5), [this, idx = result.index] {
+            return pending_commits_.count(idx) > 0 || !running_.load();
+        });
+        pending_commits_.erase(result.index);
     }
 
     std::ostringstream oss;

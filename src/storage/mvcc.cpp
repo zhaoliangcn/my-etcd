@@ -252,6 +252,7 @@ void MVCC::Compact(Revision rev) {
 }
 
 Revision MVCC::AllocateRevision() {
+    std::lock_guard<std::shared_mutex> lock(mu_);
     return current_rev_.fetch_add(1);
 }
 

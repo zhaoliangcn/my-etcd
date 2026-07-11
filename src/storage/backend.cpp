@@ -21,11 +21,15 @@ bool Backend::Open() {
         fs::create_directories(data_dir_, ec);
     }
 
-    return LoadFromDisk();
+    bool ok = LoadFromDisk();
+    if (ok) opened_ = true;
+    return ok;
 }
 
 void Backend::Close() {
     std::lock_guard<std::mutex> lock(mu_);
+    if (!opened_) return;
+    opened_ = false;
     FlushToDisk();
 }
 

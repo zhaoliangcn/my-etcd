@@ -13,6 +13,8 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <condition_variable>
+#include <map>
 
 namespace myetcd {
 
@@ -84,6 +86,11 @@ private:
     std::thread snapshot_thread_;
     std::mutex server_mu_;
     Index snapshot_index_ = 0;  // 上次快照的索引
+
+    // 等待 Raft 提交
+    std::mutex commit_mu_;
+    std::condition_variable commit_cv_;
+    std::map<Index, bool> pending_commits_;  // index -> applied
 };
 
 } // namespace myetcd
