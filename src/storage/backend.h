@@ -10,9 +10,11 @@
 namespace myetcd {
 
 // 后端持久化存储 - 简单的文件存储实现
-// 存储格式: [key_len(4)][key][value_len(4)][value]
+// 存储格式: [magic(4)][version(4)][key_len(4)][key][value_len(4)][value]...
 class Backend {
 public:
+    static constexpr uint32_t kMagic = 0x4D455444; // "METD"
+    static constexpr uint32_t kVersion = 1;
     explicit Backend(const std::string& data_dir);
     ~Backend();
 

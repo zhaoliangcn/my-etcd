@@ -113,12 +113,16 @@ void EtcdServer::Stop() {
     if (!running_.compare_exchange_strong(expected, false)) {
         return; // 已经停止过
     }
+    // 停止顺序：先停止接收新请求，再等待进行中的操作完成
     if (transport_) transport_->Stop();
+    if (raft_node_) raft_node_->Stop();
+    // Raft 停止后，不会再有新的 RaftReadyHandler 调用
+    // 等待快照线程结束（它可能在调用 wal_/kvstore_）
     if (snapshot_thread_.joinable()) {
         snapshot_thread_.join();
     }
-    if (raft_node_) raft_node_->Stop();
     if (lease_mgr_) lease_mgr_->Stop();
+    // 最后关闭持久化存储
     if (wal_) wal_->Close();
     if (kvstore_) kvstore_->Close();
     std::cout << "[Server] my-etcd server stopped" << std::endl;

@@ -3,6 +3,7 @@
 #include <fstream>
 #include <algorithm>
 #include <cstdio>
+#include <iostream>
 
 namespace myetcd {
 
@@ -32,6 +33,13 @@ bool SnapshotManager::CreateSnapshot(Index last_index, Term last_term, const std
     ofs.write(reinterpret_cast<const char*>(&last_index), sizeof(Index));
     ofs.write(reinterpret_cast<const char*>(&last_term), sizeof(Term));
 
+    // 检查数据大小是否超过 uint32_t 范围
+    if (data.size() > UINT32_MAX) {
+        std::cerr << "[Snapshot] Data too large: " << data.size() << " bytes" << std::endl;
+        std::error_code ec;
+        fs::remove(tmp_path, ec);
+        return false;
+    }
     uint32_t data_size = static_cast<uint32_t>(data.size());
     ofs.write(reinterpret_cast<const char*>(&data_size), sizeof(uint32_t));
     if (!data.empty()) {
@@ -135,6 +143,7 @@ void SnapshotManager::CleanupOldSnapshots() {
 }
 
 bool SnapshotManager::ShouldSnapshot(Index last_applied, Index snapshot_index, int64_t threshold) const {
+    if (last_applied <= snapshot_index) return false;
     return (last_applied - snapshot_index) >= static_cast<Index>(threshold);
 }
 

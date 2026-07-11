@@ -38,10 +38,24 @@ bool Backend::LoadFromDisk() {
     size_t file_size = ifs.tellg();
     ifs.seekg(0, std::ios::beg);
 
+    // 验证 magic header
+    if (file_size < 8) return true; // 太小，视为旧格式或空文件
+    uint32_t magic = 0, version = 0;
+    ifs.read(reinterpret_cast<char*>(&magic), sizeof(uint32_t));
+    ifs.read(reinterpret_cast<char*>(&version), sizeof(uint32_t));
+    if (magic != kMagic) {
+        std::cerr << "[Backend] Invalid magic number, treating as empty" << std::endl;
+        return true;
+    }
+    if (version > kVersion) {
+        std::cerr << "[Backend] Unknown version " << version << std::endl;
+        return true;
+    }
+
     constexpr size_t kMaxKeyLen = 1024 * 1024;    // 1MB
     constexpr size_t kMaxValueLen = 64 * 1024 * 1024; // 64MB
 
-    size_t bytes_read = 0;
+    size_t bytes_read = 8; // 已读取 magic + version
     while (bytes_read + 4 <= file_size) {
         uint32_t key_len = 0;
         ifs.read(reinterpret_cast<char*>(&key_len), sizeof(uint32_t));
@@ -81,6 +95,12 @@ bool Backend::FlushToDisk() {
     // 写临时文件，确保数据完整后再原子重命名
     std::ofstream ofs(tmp_path, std::ios::binary | std::ios::trunc);
     if (!ofs) return false;
+
+    // 写入 magic header
+    uint32_t magic = kMagic;
+    uint32_t version = kVersion;
+    ofs.write(reinterpret_cast<const char*>(&magic), sizeof(uint32_t));
+    ofs.write(reinterpret_cast<const char*>(&version), sizeof(uint32_t));
 
     for (const auto& [key, value] : store_) {
         uint32_t key_len = static_cast<uint32_t>(key.size());

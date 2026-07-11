@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <atomic>
 #include <csignal>
+#include <set>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -30,6 +31,29 @@ using socklen_t = int;
 #endif
 
 namespace myetcd {
+
+// URL 解码
+static std::string UrlDecode(const std::string& str) {
+    std::string result;
+    result.reserve(str.size());
+    for (size_t i = 0; i < str.size(); ++i) {
+        if (str[i] == '%' && i + 2 < str.size()) {
+            int val = 0;
+            std::istringstream hex(str.substr(i + 1, 2));
+            if (hex >> std::hex >> val) {
+                result += static_cast<char>(val);
+                i += 2;
+            } else {
+                result += str[i];
+            }
+        } else if (str[i] == '+') {
+            result += ' ';
+        } else {
+            result += str[i];
+        }
+    }
+    return result;
+}
 
 // 简单的 HTTP 服务器
 class SimpleHttpServer {
@@ -168,7 +192,12 @@ private:
                 std::string value = line.substr(colon + 1);
                 value.erase(0, value.find_first_not_of(" \t"));
                 try {
-                    content_length = std::stoi(value);
+                    long val = std::stol(value);
+                    if (val < 0 || val > 64 * 1024 * 1024) { // 最大 64MB
+                        content_length = 0;
+                    } else {
+                        content_length = static_cast<int>(val);
+                    }
                 } catch (const std::invalid_argument&) {
                     content_length = 0;
                 } catch (const std::out_of_range&) {
@@ -228,7 +257,9 @@ private:
             while (std::getline(qiss, param, '&')) {
                 size_t eq = param.find('=');
                 if (eq != std::string::npos) {
-                    req.query_params[param.substr(0, eq)] = param.substr(eq + 1);
+                    std::string key = UrlDecode(param.substr(0, eq));
+                    std::string value = UrlDecode(param.substr(eq + 1));
+                    req.query_params[key] = value;
                 }
             }
         }
@@ -270,6 +301,16 @@ private:
     }
 
     HttpResponse HandleRequest(const HttpRequest& req) {
+        // 拒绝危险的 HTTP 方法
+        static const std::set<std::string> kDangerousMethods = {
+            "TRACE", "CONNECT", "OPTIONS"
+        };
+        if (kDangerousMethods.count(req.method)) {
+            HttpResponse resp;
+            resp.SetError(405, "method not allowed: " + req.method);
+            return resp;
+        }
+
         // 路由分发
         if (req.method == "PUT" && req.path == "/v3/kv/put") {
             return HandlePut(req);

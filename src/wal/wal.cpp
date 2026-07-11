@@ -296,6 +296,12 @@ std::vector<RaftEntry> WAL::ReadAllEntriesUnlocked() {
 
         std::vector<uint8_t> buffer(file_size);
         ifs.read(reinterpret_cast<char*>(buffer.data()), file_size);
+        size_t actual_read = static_cast<size_t>(ifs.gcount());
+        if (actual_read != file_size) {
+            std::cerr << "[WAL] Partial read of WAL file " << seq
+                      << ": expected " << file_size << " got " << actual_read << std::endl;
+            file_size = actual_read; // 使用实际读取的大小
+        }
 
         size_t offset = 0;
         while (offset + 4 <= file_size) {

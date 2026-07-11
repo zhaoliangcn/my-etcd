@@ -71,22 +71,30 @@ bool WatchManager::Cancel(int64_t watch_id) {
 }
 
 void WatchManager::Notify(const WatchEvent& event) {
-    std::lock_guard<std::mutex> lock(mu_);
+    // 先在锁内收集匹配的 watcher，再在锁外推送事件
+    std::vector<std::shared_ptr<Watcher>> matched;
+    {
+        std::lock_guard<std::mutex> lock(mu_);
+        for (auto& [id, w] : watchers_) {
+            if (w->cancelled) continue;
+            if (event.kv.mod_revision <= w->start_rev) continue;
 
-    for (auto& [id, w] : watchers_) {
-        if (w->cancelled) continue;
-        if (event.kv.mod_revision <= w->start_rev) continue;
+            bool match = false;
+            if (w->type == Watcher::WatchType::Key) {
+                match = (event.kv.key == w->key);
+            } else {
+                match = (event.kv.key.compare(0, w->key.size(), w->key) == 0);
+            }
 
-        bool match = false;
-        if (w->type == Watcher::WatchType::Key) {
-            match = (event.kv.key == w->key);
-        } else {
-            match = (event.kv.key.compare(0, w->key.size(), w->key) == 0);
+            if (match) {
+                matched.push_back(w);
+            }
         }
+    }
 
-        if (match) {
-            w->PushEvent(event);
-        }
+    // 在锁外推送事件，避免阻塞其他 Watch 操作
+    for (auto& w : matched) {
+        w->PushEvent(event);
     }
 }
 
