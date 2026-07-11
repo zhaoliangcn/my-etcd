@@ -82,12 +82,17 @@
 | M31 | Put() 不等待提交 | 条件变量等待 Raft 提交 |
 | M32 | 双重 Close | Backend 添加 opened_ 标志 |
 
-### LOW (3/17 已修复)
+### LOW (8/17 已修复)
 
 | # | 问题 | 修复方式 |
 |---|------|----------|
 | L1 | `ApplySnapshot` 无输入校验 | 校验快照索引不小于 commit_index |
-| L8 | `WatchEvent::type` 未初始化 | 添加默认初始化 `EventType::PUT` |
+| L2 | `EntriesFrom` 返回完整拷贝 | 添加 limit 参数 |
+| L3 | `InMemoryTransport` 命名不准确 | 重命名为 `LoopbackTransport` |
+| L4 | 硬编码 1MB 消息限制 | 提升到 4MB，使用常量 |
+| L7 | 无 TTL 上下界校验 | 添加上限校验（最大 1 年） |
+| L8 | `WatchEvent::type` 未初始化 | 添加默认初始化 |
+| L10 | `setsockopt` 返回值未检查 | 添加返回值检查 |
 | L11 | RaftNode 成员默认初始化 | Watcher 字段添加默认值 |
 
 ## 统计概览
@@ -97,7 +102,7 @@
 | **CRITICAL** | 11 | **11** | 0 |
 | **HIGH** | 26 | **25** | 1 |
 | **MEDIUM** | 36 | **29** | 7 |
-| **LOW** | 17 | **3** | 14 |
+| **LOW** | 17 | **8** | 9 |
 
 ## 新增功能
 
