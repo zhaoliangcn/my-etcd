@@ -322,10 +322,13 @@ my-etcd/
 
 ## 8. 待实现/改进
 
-- [ ] 多节点集群通信（TCP Transport）
-- [ ] 成员变更（Add/Remove Node）
-- [ ] 认证鉴权
-- [ ] 事务（Txn）
+- [x] 多节点集群通信（TCP Transport）
+- [x] 成员变更（Add/Remove Node）
+- [x] 认证鉴权（Token-based Auth）
+- [x] 事务（Txn）
 - [ ] 完整的 gRPC 支持
-- [ ] 性能优化（批量提交、流水线）
-- [ ] 单元测试和集成测试
+- [x] 性能优化（批量提交）
+- [x] WAL CRC32 校验
+- [x] Snapshot 索引追踪
+- [ ] Watch 流式化（长连接推送）
+- [ ] 引入 JSON 库替代手写解析

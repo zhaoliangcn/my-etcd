@@ -129,12 +129,14 @@ cd tests && pip install -r requirements.txt && python run_tests.py
 
 ## 🗺️ 待实现
 
-- [ ] 多节点集群通信（TCP Transport）
-- [ ] 成员变更（Add/Remove Node）
-- [ ] 认证鉴权
-- [ ] 事务（Txn）
+- [x] 多节点集群通信（TCP Transport）
+- [x] 成员变更（Add/Remove Node）
+- [x] 认证鉴权（Token-based Auth）
+- [x] 事务（Txn）
 - [ ] 完整的 gRPC 支持
-- [ ] 性能优化（批量提交、流水线）
+- [x] 性能优化（批量提交）
+- [x] WAL CRC32 校验
+- [x] Snapshot 索引追踪
 
 ## 🤝 贡献
 
