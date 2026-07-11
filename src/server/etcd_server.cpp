@@ -198,14 +198,14 @@ void EtcdServer::SnapshotLoop() {
         if (!running_) break;
 
         Index last_applied = raft_node_->GetLog().LastIndex();
-        Index snapshot_index = 0; // TODO: 跟踪上次快照索引
 
-        if (snapshot_mgr_->ShouldSnapshot(last_applied, snapshot_index)) {
+        if (snapshot_mgr_->ShouldSnapshot(last_applied, snapshot_index_)) {
             std::lock_guard<std::mutex> lock(server_mu_);
             std::cout << "[Server] Taking snapshot at index " << last_applied << std::endl;
             auto data = kvstore_->Serialize();
             snapshot_mgr_->CreateSnapshot(last_applied, raft_node_->CurrentTerm(), data);
             wal_->TruncateFrom(last_applied);
+            snapshot_index_ = last_applied;
         }
     }
 }

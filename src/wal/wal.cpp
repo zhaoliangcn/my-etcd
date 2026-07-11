@@ -9,6 +9,48 @@ namespace myetcd {
 
 namespace fs = std::filesystem;
 
+// ============================================================
+// CRC32 实现
+// ============================================================
+uint32_t CRC32::table_[256];
+bool CRC32::table_initialized_ = false;
+
+void CRC32::InitTable() {
+    for (uint32_t i = 0; i < 256; ++i) {
+        uint32_t crc = i;
+        for (int j = 0; j < 8; ++j) {
+            if (crc & 1) {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+        table_[i] = crc;
+    }
+    table_initialized_ = true;
+}
+
+CRC32::CRC32() : crc_(0xFFFFFFFF) {
+    if (!table_initialized_) InitTable();
+}
+
+void CRC32::Update(const void* data, size_t len) {
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < len; ++i) {
+        crc_ = table_[(crc_ ^ p[i]) & 0xFF] ^ (crc_ >> 8);
+    }
+}
+
+uint32_t CRC32::Final() const {
+    return crc_ ^ 0xFFFFFFFF;
+}
+
+uint32_t CRC32::Compute(const void* data, size_t len) {
+    CRC32 crc;
+    crc.Update(data, len);
+    return crc.Final();
+}
+
 WAL::WAL(const std::string& dir) : dir_(dir) {}
 
 WAL::~WAL() {
@@ -176,7 +218,11 @@ std::vector<uint8_t> WAL::SerializeEntry(const RaftEntry& entry) {
         write_str(entry.conf_change.peer_addr);
     }
 
-    // 写入总长度前缀
+    // 计算 CRC32（对 type 之后的数据）
+    uint32_t crc = CRC32::Compute(data.data() + 1, data.size() - 1);
+    write_u32(crc);
+
+    // 写入总长度前缀（包含 CRC）
     uint32_t total_len = static_cast<uint32_t>(data.size());
     data.insert(data.begin(), {
         static_cast<uint8_t>(total_len),
@@ -232,6 +278,9 @@ RaftEntry WAL::DeserializeEntry(const uint8_t* data, size_t size, size_t& offset
     if (!check_bounds(4)) return entry;
     read_u32();
 
+    // 记录 CRC 校验的起始位置（type 字段之后）
+    size_t crc_start = offset;
+
     if (!check_bounds(1)) return entry;
     uint8_t type = read_u8();
     if (static_cast<WalRecordType>(type) != WalRecordType::Entry) {
@@ -244,15 +293,25 @@ RaftEntry WAL::DeserializeEntry(const uint8_t* data, size_t size, size_t& offset
     entry.type = static_cast<EventType>(read_u8());
     entry.key = read_str();
     entry.value = read_str();
-    if (!check_bounds(8)) return entry;
+    if (!check_bounds(8 + 4)) return entry; // lease_id + CRC
     entry.lease_id = static_cast<LeaseId>(read_u64());
 
     // 读取 ConfChange 数据（仅 CONF_CHANGE 类型）
     if (entry.type == EventType::CONF_CHANGE) {
-        if (!check_bounds(1 + 8)) return entry;
+        if (!check_bounds(1 + 8 + 4)) return entry; // +4 for CRC
         entry.conf_change.type = static_cast<ConfChangeType>(read_u8());
         entry.conf_change.node_id = read_u64();
         entry.conf_change.peer_addr = read_str();
+    }
+
+    // 验证 CRC32
+    size_t crc_data_len = offset - crc_start - 4; // 不含 CRC 本身
+    uint32_t expected_crc = CRC32::Compute(data + crc_start, crc_data_len);
+    uint32_t stored_crc = read_u32();
+    if (expected_crc != stored_crc) {
+        std::cerr << "[WAL] CRC mismatch at entry index " << entry.index
+                  << ": expected=" << expected_crc << " stored=" << stored_crc << std::endl;
+        return RaftEntry{}; // CRC 校验失败，返回空条目
     }
 
     return entry;

@@ -17,6 +17,21 @@ enum class WalRecordType : uint8_t {
     Crc32 = 3,
 };
 
+// CRC32 计算（用于 WAL 条目校验）
+class CRC32 {
+public:
+    CRC32();
+    void Update(const void* data, size_t len);
+    uint32_t Final() const;
+    static uint32_t Compute(const void* data, size_t len);
+
+private:
+    uint32_t crc_ = 0xFFFFFFFF;
+    static uint32_t table_[256];
+    static bool table_initialized_;
+    static void InitTable();
+};
+
 // WAL (Write-Ahead Log) - 持久化日志
 class WAL {
 public:

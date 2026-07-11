@@ -58,8 +58,8 @@ static std::string UrlDecode(const std::string& str) {
 // 简单的 HTTP 服务器
 class SimpleHttpServer {
 public:
-    SimpleHttpServer(EtcdServer* server, const std::string& addr, int port)
-        : server_(server), addr_(addr), port_(port) {}
+    SimpleHttpServer(EtcdServer* server, const std::string& addr, int port, const std::string& auth_token = "")
+        : server_(server), addr_(addr), port_(port), auth_token_(auth_token) {}
 
     bool Start() {
 #ifdef _WIN32
@@ -309,6 +309,30 @@ private:
             HttpResponse resp;
             resp.SetError(405, "method not allowed: " + req.method);
             return resp;
+        }
+
+        // 认证检查（如果配置了 auth_token）
+        if (!auth_token_.empty()) {
+            auto it = req.headers.find("Authorization");
+            if (it == req.headers.end()) {
+                // 也检查小写
+                it = req.headers.find("authorization");
+            }
+            bool auth_ok = false;
+            if (it != req.headers.end()) {
+                // 支持 "Bearer <token>" 和 "<token>" 两种格式
+                const std::string& auth = it->second;
+                if (auth == auth_token_) {
+                    auth_ok = true;
+                } else if (auth.size() > 7 && auth.substr(0, 7) == "Bearer ") {
+                    auth_ok = (auth.substr(7) == auth_token_);
+                }
+            }
+            if (!auth_ok) {
+                HttpResponse resp;
+                resp.SetError(401, "unauthorized: invalid or missing auth token");
+                return resp;
+            }
         }
 
         // 路由分发
@@ -598,6 +622,7 @@ private:
     EtcdServer* server_;
     std::string addr_;
     int port_;
+    std::string auth_token_;
     SOCKET listen_socket_ = INVALID_SOCKET;
     std::thread server_thread_;
     std::atomic<bool> running_{false};
@@ -621,6 +646,7 @@ void PrintUsage(const char* prog) {
               << "  --listen-addr <addr>      Client listen address (default: 0.0.0.0:2379)\n"
               << "  --listen-peer-addr <addr> Peer listen address (default: 0.0.0.0:2380)\n"
               << "  --initial-cluster <str>   Initial cluster config, format: name1=addr1,name2=addr2,...\n"
+              << "  --auth-token <token>      Authentication token (empty = no auth)\n"
               << "  --help                    Show this help\n"
               << std::endl;
 }
@@ -666,6 +692,8 @@ int main(int argc, char* argv[]) {
             config.listen_peer_addr = argv[++i];
         } else if (arg == "--initial-cluster" && i + 1 < argc) {
             config.initial_cluster = ParseInitialCluster(argv[++i], config.node_id, config.peer_addresses);
+        } else if (arg == "--auth-token" && i + 1 < argc) {
+            config.auth_token = argv[++i];
         } else if (arg == "--help") {
             PrintUsage(argv[0]);
             return 0;
@@ -696,7 +724,7 @@ int main(int argc, char* argv[]) {
     }
 
     // 启动 HTTP 服务器
-    SimpleHttpServer http_server(&server, host, port);
+    SimpleHttpServer http_server(&server, host, port, config.auth_token);
     if (!http_server.Start()) {
         std::cerr << "Failed to start HTTP server" << std::endl;
         return 1;

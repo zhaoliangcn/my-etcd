@@ -83,6 +83,7 @@ private:
     std::atomic<bool> running_{false};
     std::thread snapshot_thread_;
     std::mutex server_mu_;
+    Index snapshot_index_ = 0;  // 上次快照的索引
 };
 
 } // namespace myetcd

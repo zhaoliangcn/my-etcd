@@ -162,7 +162,10 @@ struct ClusterConfig {
     std::string listen_peer_addr = "0.0.0.0:2380";
     std::vector<std::string> initial_cluster;
     std::map<NodeId, std::string> peer_addresses;      // node_id → "host:port" 用于 TCP 传输
-    
+
+    // 认证配置
+    std::string auth_token;  // 为空表示不启用认证
+
     // 时间参数 (毫秒)
     int64_t election_timeout_ms = 1000;
     int64_t heartbeat_interval_ms = 100;
